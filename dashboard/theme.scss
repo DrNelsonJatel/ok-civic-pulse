@@ -1,0 +1,29 @@
+/*-- scss:defaults --*/
+// Limnology Research mark: deep teal ink, warm accent for out-of-scope.
+$primary:        #1F7A8C;
+$body-color:     #12303A;
+$body-bg:        #FBFAF7;
+$font-size-root: 16px;
+
+/*-- scss:rules --*/
+// Every chart label is >=12pt by construction in theme_okcp(); this keeps the
+// surrounding UI from undercutting that.
+body, .card, .valuebox { font-size: 1rem; }
+
+.valuebox-value { font-weight: 700; }
+
+.scope-local      { color: #1F7A8C; font-weight: 600; }
+.scope-provincial { color: #B08900; font-weight: 600; }
+.scope-federal    { color: #C05621; font-weight: 600; }
+
+.card-header { font-weight: 600; letter-spacing: 0.01em; }
+
+// Provenance strip: this product's credibility rests on it, so it is styled to
+// be read rather than tucked away.
+.provenance {
+  font-size: 0.85rem;
+  color: #6B7A82;
+  border-left: 3px solid #1F7A8C;
+  padding-left: 0.75rem;
+  margin-top: 0.5rem;
+}

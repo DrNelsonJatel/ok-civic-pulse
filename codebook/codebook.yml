@@ -1,0 +1,284 @@
+label: v1 initial - migrated from R/taxonomy.R tribble
+description: 'Municipal sphere-of-influence codebook for Okanagan civic discourse.
+  Scope is the central judgement: which level of government owns the issue.'
+scopes:
+  local: a municipal council or regional board has direct authority
+  ballot: not municipal, but the office IS elected on 2026-10-17 (school trustees;
+    regional district electoral area directors)
+  shared: a real local role, but the province holds the main levers
+  provincial: provincial responsibility, often misdirected at council
+  federal: federal responsibility
+weak_gate_codes:
+- governance_process
+issues:
+- code: tax_budget
+  label: Property tax & municipal budget
+  scope: local
+  definition: Property tax rates, mill rate, the annual municipal budget, user fees,
+    development cost charges, municipal spending priorities and debt.
+  seeds: property tax|\bmill rate\b|municipal budget|city budget|tax increase|tax
+    hike|taxpayer|user fee|\bDCCs?\b|development cost charge|budget deliberation|asset
+    management
+- code: land_use_zoning
+  label: Zoning & land use
+  scope: local
+  definition: Zoning bylaws, Official Community Plan, rezoning applications, variances,
+    density, land use designation, urban containment boundary.
+  seeds: \bzoning\b|\brezon|\bOCP\b|official community plan|land use|\bvariance\b|\bdensity\b|\bsetback\b|urban
+    containment|\bupzon|spot zoning
+- code: development_approvals
+  label: Development & building approvals
+  scope: local
+  definition: Development permits, building permits, subdivision approval, construction
+    timelines, permit backlogs, developer relations.
+  seeds: development permit|building permit|\bsubdivision\b|\bdeveloper\b|permit backlog|construction
+    approval|\bDVP\b|highrise|high[- ]rise|\btower\b
+- code: housing
+  label: Housing supply & affordability
+  scope: shared
+  definition: Housing supply, affordability, rental availability, missing middle,
+    secondary suites, purpose-built rental. Local levers are zoning and approvals;
+    the province sets tenancy law and most funding.
+  seeds: affordable housing|housing crisis|housing supply|missing middle|secondary
+    suite|carriage house|purpose[- ]built rental|\brenoviction|rental vacancy|\blandlord\b|housing
+    affordab
+- code: short_term_rentals
+  label: Short-term rentals
+  scope: shared
+  definition: Airbnb/VRBO regulation, STR business licensing and enforcement. Municipalities
+    licence and enforce; the province sets the principal-residence framework.
+  seeds: short[- ]term rental|\bAirbnb\b|\bVRBO\b|\bSTRs?\b(?! ?Act)|vacation rental|nightly
+    rental
+- code: roads_traffic
+  label: Local roads, traffic & parking
+  scope: local
+  definition: Municipal road maintenance, potholes, traffic calming, intersections,
+    signals, speed limits, snow removal, street parking. Excludes provincial highways.
+  seeds: \bpothole|road maintenance|traffic calming|\bintersection\b|traffic light|\broundabout\b|speed
+    limit|\bspeeding\b|snow removal|snow plow|snowplow|\bparking\b|street sweep|\bcrosswalk\b
+- code: transit_active
+  label: Transit & active transportation
+  scope: local
+  definition: Transit service levels and routes, bus stops, bike lanes, sidewalks,
+    multi-use paths, active transportation network.
+  seeds: \btransit\b|\bbus route|bus service|bus stop|\bbike lane|cycling lane|\bsidewalk|multi[-
+    ]use path|active transportation|\bgreenway\b|rail trail
+- code: water_sewer
+  label: Water & sewer utilities
+  scope: local
+  definition: Municipal water utility, water restrictions and conservation stages,
+    irrigation districts, sewer service, wastewater treatment, drinking water quality
+    and advisories.
+  seeds: water restriction|water conservation|stage [1-5]|\bwater utility|water rate|drinking
+    water|water quality advisor|boil water|\bsewer\b|\bwastewater\b|\beffluent\b|treatment
+    plant|irrigation district|\bwatering\b
+- code: solid_waste
+  label: Garbage, recycling & landfill
+  scope: local
+  definition: Curbside garbage and recycling collection, yard waste, organics, landfill
+    operations and tipping fees, illegal dumping.
+  seeds: \bgarbage\b|\brecycling\b|\bcurbside\b|yard waste|\borganics\b|\blandfill\b|tipping
+    fee|illegal dump|\bcompost
+- code: parks_rec
+  label: Parks, recreation & beaches
+  scope: local
+  definition: Parks, trails, beaches, recreation centres, pools, arenas, sports fields,
+    community events and facility funding.
+  seeds: \bparks?\b|\btrails?\b|\bbeach|rec centre|recreation centre|\bpool\b|\barena\b|sports
+    field|playground|dog park|\bboat launch
+- code: policing_bylaw
+  label: Policing, bylaw & community safety
+  scope: shared
+  definition: RCMP contract and detachment staffing, municipal bylaw enforcement,
+    community safety officers, crime and property crime response. Councils fund and
+    set priorities; the province and RCMP run the service.
+  seeds: \bRCMP\b|\bpolicing\b|police budget|\bdetachment\b|bylaw officer|bylaw enforcement|community
+    safety|property crime|\bprolific offender|\bpolice\b
+- code: fire_emergency
+  label: Fire & emergency management
+  scope: local
+  definition: Fire department staffing and halls, emergency management, wildfire interface
+    risk, FireSmart, evacuation orders and alerts.
+  seeds: fire depart|fire hall|\bfirefighter|\bFireSmart\b|wildfire risk|interface
+    fire|evacuation order|evacuation alert|emergency management|\bEOC\b|\bwildfire\b
+- code: homelessness_social
+  label: Homelessness & social services
+  scope: shared
+  definition: Encampments, shelters, supportive housing siting, outreach. Municipalities
+    control siting and bylaws; the province funds and operates services.
+  seeds: \bhomeless|\bencampment|\bshelter\b|supportive housing|\btent city|street
+    entrench|\boutreach worker
+- code: economic_dev
+  label: Economic development & business
+  scope: local
+  definition: Downtown revitalization, business licensing, storefront vacancy, tourism
+    promotion, film and event attraction, industrial land supply.
+  seeds: downtown revital|business licen|storefront vacan|\btourism\b|economic development|\bDMO\b|industrial
+    land|business improvement
+- code: climate_flood
+  label: Flood, drought & climate resilience
+  scope: local
+  definition: Flood mitigation, dikes, foreshore protection, lake levels, drought
+    resilience planning, milfoil control, stormwater.
+  seeds: \bflood|\bdike\b|\bdyke\b|\bforeshore\b|lake level|\bdrought\b|\bmilfoil\b|\bstormwater\b|climate
+    adaptation|climate action plan|\berosion\b
+- code: agriculture_alr
+  label: Agriculture & ALR
+  scope: shared
+  definition: Agricultural Land Reserve boundaries and exclusions, farm-urban interface,
+    agri-tourism, orchards and vineyards as land use.
+  seeds: \bALR\b|agricultural land reserve|\bfarmland\b|\borchard|\bvineyard|agri[-
+    ]tourism|farm[- ]urban
+- code: governance_process
+  label: Council conduct, process & elections
+  scope: local
+  definition: Council conduct and decorum, closed meetings, public engagement quality,
+    staff and CAO performance, referenda, and the conduct of the local election itself.
+  seeds: \bcouncil\b|\bcouncillor|\bmayor\b|\bCAO\b|city hall|closed meeting|in camera|public
+    hearing|public engagement|\breferendum\b|\belection\b|\bcandidate\b|\bincumbent\b|town
+    hall
+- code: school_board
+  label: School board & trustees
+  scope: ballot
+  definition: 'School district decisions in trustee hands: catchment and school closures,
+    busing, capital plans, board conduct. Trustees are elected on general local election
+    day.'
+  seeds: school board|school trustee|\bSD2[23]\b|school district|school clos|\bcatchment\b|school
+    bus|portable classroom|new school
+- code: regional_district
+  label: Regional district services
+  scope: ballot
+  definition: Regional district service areas and requisitions, electoral area governance,
+    regional parks, regional growth strategy. Electoral area directors are elected
+    on general local election day.
+  seeds: \bRDCO\b|\bRDNO\b|\bRDOS\b|regional district|electoral area|regional growth|\brequisition\b|regional
+    park
+- code: health_care
+  label: Health care
+  scope: provincial
+  definition: Hospitals, emergency room closures, family doctor access, ambulance
+    and paramedic response, long-term care. Councils have no authority; they lobby
+    only.
+  seeds: \bhospital\b|emergency (room|department)|\bER\b(?=.{0,40}(clos|wait|divert|nurse|doctor|patient|overcrowd))|(clos|wait|divert|overcrowd).{0,40}\bER\b|family
+    doctor|\bwalk[- ]in clinic|\bambulance\b|\bparamedic|Interior Health|long[- ]term
+    care|\bICU\b|health authority
+- code: education_provincial
+  label: Education funding & curriculum
+  scope: provincial
+  definition: K-12 funding formula, curriculum, teacher bargaining, post-secondary.
+    Provincial, as distinct from trustee-level school board decisions.
+  seeds: curriculum|teacher strike|teacher bargain|education funding|\bBCTF\b|\bUBCO\b|\bOkanagan
+    College\b|tuition
+- code: highways_moti
+  label: Provincial highways
+  scope: provincial
+  definition: Highway 97, the Coquihalla and Connector, provincial bridges, MoTI projects
+    and maintenance contracts. Routinely blamed on councils that have no jurisdiction.
+  seeds: highway 97|\bhwy 97|\bcoquihalla\b|\bconnector\b|\bMoTI\b|ministry of transportation|\bbridge\b|highway
+    maintenance|\bW\.?R\.? Bennett
+- code: drugs_treatment
+  label: Drug policy & treatment
+  scope: provincial
+  definition: Decriminalization, safe supply, involuntary care, treatment and detox
+    bed capacity, overdose response.
+  seeds: \bdecriminaliz|safe supply|safer supply|involuntary care|treatment bed|\bdetox\b|\boverdose\b|drug
+    policy|\bsupervised consumption
+- code: courts_bail
+  label: Courts, bail & sentencing
+  scope: provincial
+  definition: Bail decisions, sentencing, court backlogs, prosecution policy, repeat
+    offender management in the justice system.
+  seeds: \bbail\b|\bsentencing\b|\bcourt\b|\bjudge\b|\bcrown counsel|catch and release|\bprosecut
+- code: crown_corps
+  label: ICBC, BC Hydro & Crown corporations
+  scope: provincial
+  definition: ICBC rates and claims, BC Hydro rates and outages, BC Ferries, Liquor
+    Distribution Branch.
+  seeds: \bICBC\b|\bBC Hydro\b|\bhydro rate|\bhydro bill|BC Ferries|\bLDB\b
+- code: immigration
+  label: Immigration
+  scope: federal
+  definition: Immigration levels, temporary foreign workers, international students,
+    refugee policy, border.
+  seeds: \bimmigration\b|\bimmigrant|temporary foreign worker|\bTFW\b|international
+    student|\brefugee|\bborder\b|\bIRCC\b
+- code: federal_fiscal
+  label: Federal fiscal & monetary policy
+  scope: federal
+  definition: Carbon pricing, federal budget and deficit, interest rates, inflation,
+    equalization, federal taxation.
+  seeds: carbon tax|carbon pricing|federal budget|\bdeficit\b|interest rate|\binflation\b|\bequalization\b|Bank
+    of Canada|\bGST\b|\bcapital gains
+- code: national_partisan
+  label: Federal & provincial party politics
+  scope: federal
+  definition: Party leaders, party politics, federal or provincial elections, partisan
+    point-scoring not tied to a local decision.
+  seeds: \bTrudeau\b|\bCarney\b|\bPoilievre\b|\bEby\b|\bNDP\b|\bLiberals?\b|\bConservatives?\b|\bBC
+    United\b|\bGreens?\b|federal election|provincial election
+- code: foreign_world
+  label: Foreign & world affairs
+  scope: federal
+  definition: Wars, foreign leaders, international conflicts and other non-Canadian
+    news. Dominant on f=134 and almost never municipally actionable.
+  seeds: \bTrump\b|\bUkraine\b|\bRussia\b|\bIsrael\b|\bGaza\b|\bIran\b|\bChina\b|\bNATO\b|\btariff|\bPutin\b|\bBiden\b|middle
+    east
+jurisdictions:
+- code: kelowna
+  label: City of Kelowna
+  seeds: (?<!West )(?<!west )\bKelowna\b(?! ?(General|International))|\bRutland\b|\bGlenmore\b|\bMission\b(?=
+    ?(area|creek))|\bUpper Mission\b
+- code: west_kelowna
+  label: City of West Kelowna
+  seeds: West Kelowna|\bWestbank\b|\bWestside\b|\bWFN\b|Westbank First Nation
+- code: lake_country
+  label: District of Lake Country
+  seeds: Lake Country|\bWinfield\b|\bOyama\b|\bCarr's Landing\b
+- code: peachland
+  label: District of Peachland
+  seeds: \bPeachland\b
+- code: vernon
+  label: City of Vernon
+  seeds: \bVernon\b
+- code: coldstream
+  label: District of Coldstream
+  seeds: \bColdstream\b
+- code: lumby
+  label: Village of Lumby
+  seeds: \bLumby\b
+- code: armstrong
+  label: City of Armstrong
+  seeds: \bArmstrong\b
+- code: enderby
+  label: City of Enderby
+  seeds: \bEnderby\b
+- code: spallumcheen
+  label: Township of Spallumcheen
+  seeds: \bSpallumcheen\b
+- code: penticton
+  label: City of Penticton
+  seeds: \bPenticton\b
+- code: summerland
+  label: District of Summerland
+  seeds: \bSummerland\b
+- code: oliver
+  label: Town of Oliver
+  seeds: \bOliver\b(?! Twist)
+- code: osoyoos
+  label: Town of Osoyoos
+  seeds: \bOsoyoos\b
+- code: keremeos
+  label: Village of Keremeos
+  seeds: \bKeremeos\b
+- code: princeton
+  label: Town of Princeton
+  seeds: \bPrinceton\b(?! University)
+- code: rdco
+  label: Regional District Central Okanagan
+  seeds: \bRDCO\b|Regional District of Central Okanagan
+- code: rdno
+  label: Regional District North Okanagan
+  seeds: \bRDNO\b|Regional District of North Okanagan
+- code: rdos
+  label: Regional District Okanagan-Similkameen
+  seeds: \bRDOS\b|Regional District of Okanagan

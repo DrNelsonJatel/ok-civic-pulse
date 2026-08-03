@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# NEVER COMMIT COMMENT TEXT.
+#
+# Castanet's ToU prohibits redistribution, and council minutes name real
+# residents. Comment text and speaker names live ONLY in the local DuckDB.
+# Everything below either contains that text or is regenerable output.
+#
+# NOTE: gitignore has no trailing-comment syntax. A line like "db/  # text"
+# is treated as a literal pattern and silently matches nothing.
+# ---------------------------------------------------------------------------
+
+# civic_pulse.duckdb holds comment text; serve.duckdb is derived
+db/
+
+# Batch API metadata: classify_batch_submit() saves the submitted chunks,
+# which INCLUDE body_local. Least obvious text leak in the repo.
+output/batch_*.rds
+
+output/cache/
+output/weekly/
+output/py_local/
+output/reports/
+output/snapshots/
+
+# Quarto / render intermediates
+report/daily.pdf
+report/daily.typ
+report/preview.png
+report/daily_files/
+dashboard/.quarto/
+dashboard/index_files/
+.quarto/
+
+# Credentials and local state
+.env
+.Renviron
+credentials.sqlite
+*.rds.local
+
+# R / macOS
+.Rproj.user
+.Rhistory
+.RData
+.Rapp.history
+renv/library/
+.DS_Store

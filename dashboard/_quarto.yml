@@ -1,0 +1,23 @@
+project:
+  type: website
+  output-dir: ../docs      # static output; free to host on Vercel / GH Pages
+
+website:
+  title: "Okanagan Civic Pulse"
+  description: >
+    Which issues in Okanagan public discourse a local government can actually
+    act on — ahead of the BC general local election, 2026-10-17.
+  page-footer:
+    left: "Limnology Research · personal research project"
+    right: "Source: Castanet public forums. Aggregate counts only — no comment text, no handles."
+
+format:
+  dashboard:
+    theme: [cosmo, theme.scss]
+    nav-buttons: []
+    expandable: false
+
+execute:
+  echo: false
+  warning: false
+  freeze: false

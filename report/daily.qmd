@@ -1,0 +1,149 @@
+---
+# No title/subtitle here on purpose: the branded typst block below is the
+# masthead, and Quarto's default title would duplicate it.
+format:
+  typst:
+    papersize: us-letter
+    margin: { x: 1.9cm, y: 2.1cm }
+    mainfont: "Helvetica Neue"
+    fontsize: 10pt
+    section-numbering: ""
+    # Typst defaults figures to SVG, which needs a cairo-enabled R build. This
+    # machine has no X11/cairo, so the render dies in the setup chunk with a
+    # misleading error. PNG needs nothing extra and keeps the job portable to CI.
+    fig-format: png
+    fig-dpi: 200
+    # A daily brief that spills onto a second page stops being a brief.
+    fig-width: 6.2
+    fig-height: 2.0
+execute:
+  echo: false
+  warning: false
+---
+
+```{r setup}
+#| include: false
+# Typst rather than LaTeX: this renders in about a second with no TeX
+# installation, which is what makes a DAILY automated PDF practical.
+for (f in c("theme_okcp.R", "election.R", "taxonomy.R", "metrics.R", "trends.R"))
+  source(file.path("..", "R", f))
+suppressMessages({library(DBI); library(dplyr); library(ggplot2); library(scales)})
+
+serve <- file.path("..", "db", "serve.duckdb")
+HAVE <- file.exists(serve)
+if (HAVE) {
+  con <- dbConnect(duckdb::duckdb(), serve, read_only = TRUE)
+  post_issues <- dbGetQuery(con, "SELECT * FROM post_issues")
+  posts_meta  <- dbGetQuery(con, "SELECT * FROM posts_meta")
+  issue_daily <- dbGetQuery(con, "SELECT * FROM issue_daily")
+  sentiment   <- dbGetQuery(con, "SELECT * FROM sentiment")
+  src_daily   <- dbGetQuery(con, "SELECT * FROM source_daily")
+  sources_tbl <- dbGetQuery(con, "SELECT * FROM sources")
+  dbDisconnect(con, shutdown = TRUE)
+} else {
+  post_issues <- posts_meta <- issue_daily <- sentiment <-
+    src_daily <- sources_tbl <- data.frame()
+}
+LOCAL <- c("local", "ballot", "shared")
+fresh <- if (nrow(posts_meta))
+  as.integer(Sys.Date() - as.Date(max(posts_meta$posted_at, na.rm = TRUE))) else NA_integer_
+```
+
+```{r}
+#| output: asis
+# Raw typst must sit inside a ```{=typst} fence, otherwise Quarto escapes it
+# and the markup prints literally in the PDF.
+cat("```{=typst}\n")
+cat(sprintf(
+'#block(fill: rgb("%s"), inset: 11pt, radius: 3pt, width: 100%%)[
+  #text(fill: white, size: 16pt, weight: "bold")[%s]\\
+  #text(fill: white, size: 9pt)[%s #h(6pt)·#h(6pt) %s #h(6pt)·#h(6pt) *%d days* to voting day (%s)]
+]',
+  BRAND$ink, BRAND$product, BRAND$org, format(Sys.Date(), "%d %B %Y"),
+  days_to_vote(), election_phase()))
+cat("\n```\n")
+```
+
+## What the community is talking about
+
+```{r}
+#| output: asis
+if (!nrow(post_issues)) cat("_No coded comments available._\n") else {
+  top <- post_issues |> filter(issue_code != "none") |>
+    count(issue_code, scope, name = "n") |> slice_max(n, n = 5)
+  top <- top |> transmute(Issue = issue_label(issue_code),
+                          `Who owns it` = ifelse(scope %in% LOCAL,
+                                                 "Elected 17 Oct", "Provincial / federal"),
+                          Mentions = n)
+  print(knitr::kable(top, format = "pipe"))
+  cat("\n")
+}
+```
+
+## The gap: what residents raise vs what council decides
+
+```{r}
+#| output: asis
+# The project's signature finding. Both corpora are coded with one codebook,
+# so the columns are directly comparable.
+if (!nrow(post_issues) || !nrow(posts_meta)) cat("_Not enough data._\n") else {
+  j <- post_issues |> inner_join(select(posts_meta, post_id, source_id), by = "post_id") |>
+    filter(issue_code != "none", scope %in% LOCAL) |>
+    count(issue_code, source_id, name = "n") |>
+    tidyr::pivot_wider(names_from = source_id, values_from = n, values_fill = 0)
+  cn <- setdiff(names(j), "issue_code")
+  if (length(cn) < 2) cat("_Only one source ingested so far — gap analysis needs both._\n") else {
+    j$tot <- rowSums(j[cn]); j <- arrange(j, desc(tot)) |> head(8)
+    out <- data.frame(Issue = issue_label(j$issue_code),
+                      Residents = j[["castanet_forums"]] %||% 0L,
+                      `Council agenda` = j[["kelowna_escribe"]] %||% 0L,
+                      check.names = FALSE)
+    print(knitr::kable(out, format = "pipe"))
+    cat("\n")
+    cat("_Rows where one column is high and the other near zero are the attention gap._\n\n")
+  }
+}
+```
+
+## Emotional register
+
+```{r}
+#| fig-height: 2.2
+#| fig-width: 6.5
+if (nrow(sentiment) && nrow(post_issues)) {
+  d <- post_issues |> filter(issue_code != "none") |>
+    inner_join(sentiment, by = "post_id") |>
+    mutate(band = ifelse(scope %in% LOCAL, "Council can act", "Not council's to fix"),
+           across(c(anger, fear, trust), ~ 100 * .x / pmax(n_words, 1))) |>
+    group_by(band) |>
+    summarise(across(c(anger, fear, trust), ~ mean(.x, na.rm = TRUE)), .groups = "drop") |>
+    tidyr::pivot_longer(-band, names_to = "emotion", values_to = "rate")
+  ggplot(d, aes(emotion, rate, fill = band)) +
+    geom_col(position = "dodge", width = 0.6) +
+    geom_text(aes(label = sprintf("%.2f", rate)), position = position_dodge(0.6),
+              vjust = -0.35, size = pt(12), colour = BRAND$ink) +
+    scale_fill_manual(values = c("Council can act" = BRAND$accent,
+                                 "Not council's to fix" = BRAND$warm), name = NULL) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+    labs(x = NULL, y = "Words per 100") + theme_okcp(12) +
+    theme(legend.position = "bottom")
+}
+```
+
+## Provenance
+
+```{r}
+#| output: asis
+if (nrow(src_daily)) {
+  sc <- src_daily |> group_by(source_id) |>
+    summarise(days = n_distinct(day), posts = sum(n_posts),
+              local = sum(n_local), .groups = "drop") |>
+    mutate(per_day = round(local / pmax(days, 1), 1)) |> arrange(desc(per_day))
+  print(knitr::kable(data.frame(Source = sc$source_id, Items = sc$posts,
+                                `In-scope/day` = sc$per_day, check.names = FALSE),
+                     format = "pipe"))
+  cat("\n")
+}
+cat(sprintf("_Corpus freshness: most recent item %s. Aggregate counts only — no comment text, no handles, no speaker names. Discourse is not opinion: forum commenters are not a representative sample of residents._\n",
+            if (is.na(fresh)) "unknown" else sprintf("%d day%s old", fresh, ifelse(fresh == 1, "", "s"))))
+```

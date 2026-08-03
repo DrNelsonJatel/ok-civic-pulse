@@ -1,0 +1,550 @@
+---
+title: "Okanagan Civic Pulse"
+---
+
+```{r setup}
+#| include: false
+# Rendered from dashboard/, so repo paths are relative to the parent.
+for (f in c("theme_okcp.R", "election.R", "taxonomy.R"))
+  source(file.path("..", "R", f))
+suppressMessages({library(DBI); library(dplyr); library(ggplot2); library(scales)})
+
+# Read the DE-TEXTED serve copy, never the live ingest DB: DuckDB is
+# single-writer, so a render during a crawl would fail on a lock, and the serve
+# copy additionally contains no comment text and no handles.
+serve <- file.path("..", "db", "serve.duckdb")
+HAVE_DATA <- file.exists(serve)
+if (HAVE_DATA) {
+  con <- dbConnect(duckdb::duckdb(), serve, read_only = TRUE)
+  issue_daily <- dbGetQuery(con, "SELECT * FROM issue_daily")
+  post_issues <- dbGetQuery(con, "SELECT * FROM post_issues")
+  posts_meta  <- dbGetQuery(con, "SELECT * FROM posts_meta")
+  edges       <- dbGetQuery(con, "SELECT * FROM edges")
+  nodes       <- dbGetQuery(con, "SELECT * FROM nodes")
+  scrape_log  <- dbGetQuery(con, "SELECT * FROM scrape_log ORDER BY run_at DESC")
+  sentiment   <- tryCatch(dbGetQuery(con, "SELECT * FROM sentiment"), error = function(e) data.frame())
+  src_daily   <- tryCatch(dbGetQuery(con, "SELECT * FROM source_daily"), error = function(e) data.frame())
+  sources_tbl <- tryCatch(dbGetQuery(con, "SELECT * FROM sources"), error = function(e) data.frame())
+  dbDisconnect(con, shutdown = TRUE)
+} else {
+  issue_daily <- post_issues <- posts_meta <- edges <- nodes <- scrape_log <-
+    sentiment <- src_daily <- sources_tbl <- data.frame()
+}
+
+LOCAL_SCOPES <- c("local", "ballot", "shared")
+
+issue_label <- function(code) {
+  ifelse(code %in% ISSUES$code, ISSUES$label[match(code, ISSUES$code)], code)
+}
+n_or <- function(x, alt = 0) if (length(x) && !is.na(x)) x else alt
+fresh_days <- if (nrow(posts_meta))
+  as.integer(Sys.Date() - as.Date(max(posts_meta$posted_at, na.rm = TRUE))) else NA_integer_
+```
+
+# Overview
+
+## Row {height="22%"}
+
+```{r}
+#| content: valuebox
+#| title: "Days to voting day"
+list(icon = "calendar-event", color = "primary", value = days_to_vote())
+```
+
+```{r}
+#| content: valuebox
+#| title: "Election phase"
+list(icon = "flag", color = "light", value = election_phase())
+```
+
+```{r}
+#| content: valuebox
+#| title: "Comments analysed"
+list(icon = "chat-left-text", color = "light",
+     value = format(nrow(posts_meta), big.mark = ","))
+```
+
+```{r}
+#| content: valuebox
+#| title: "Locally actionable"
+local_share <- if (nrow(post_issues)) {
+  pl <- post_issues |> group_by(post_id) |>
+    summarise(loc = any(scope %in% c("local","ballot","shared")), .groups = "drop")
+  sprintf("%.0f%%", 100 * mean(pl$loc))
+} else "—"
+list(icon = "geo-alt", color = "primary", value = local_share)
+```
+
+## Row {height="78%"}
+
+### Column
+
+```{r}
+#| title: "Where the discourse actually lands"
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet. Run the classification pass.")
+} else {
+  d <- post_issues |> filter(issue_code != "none") |>
+    count(scope, name = "n") |>
+    mutate(scope = factor(scope, levels = names(SCOPE_COLOURS)))
+  ggplot(d, aes(reorder(scope, n), n, fill = scope)) +
+    geom_col(width = 0.7) +
+    geom_text(aes(label = comma(n)), hjust = -0.15, size = pt(12), colour = BRAND$ink) +
+    scale_fill_manual(values = SCOPE_COLOURS, guide = "none") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.18)), labels = comma) +
+    coord_flip() +
+    labs(x = NULL, y = "Issue mentions",
+         title = "Scope of governance issues raised",
+         subtitle = "local / ballot / shared are actionable by bodies elected 2026-10-17",
+         caption = "Aggregate counts from model-coded comments. Keyword-sieve rows excluded.") +
+    theme_okcp()
+}
+```
+
+### Column
+
+```{r}
+#| title: "Top issues"
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet.")
+} else {
+  d <- post_issues |> filter(issue_code != "none") |>
+    count(issue_code, scope, name = "n") |>
+    slice_max(n, n = 12) |>
+    mutate(label = issue_label(issue_code))
+  ggplot(d, aes(reorder(label, n), n, fill = scope)) +
+    geom_col(width = 0.72) +
+    scale_fill_manual(values = SCOPE_COLOURS, name = "Scope") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.1)), labels = comma) +
+    coord_flip() +
+    labs(x = NULL, y = "Mentions", title = "Most-raised issues") +
+    theme_okcp() + theme(legend.position = "bottom")
+}
+```
+
+# Timeline
+
+## Row {height="60%"}
+
+```{r}
+#| title: "Issue salience against the election calendar"
+if (!nrow(issue_daily)) {
+  cat("No daily rollup yet — run rebuild_issue_daily().")
+} else {
+  bands <- election_bands()
+  top <- issue_daily |> filter(scope %in% c("local","ballot","shared")) |>
+    count(issue_code, wt = n_posts, name = "tot") |> slice_max(tot, n = 6) |> pull(issue_code)
+  d <- issue_daily |> filter(issue_code %in% top) |>
+    group_by(day, issue_code) |>
+    summarise(n = sum(n_posts), .groups = "drop") |>
+    mutate(day = as.Date(day), label = issue_label(issue_code))
+
+  # Bands are drawn first so the series sit on top of them, and the x range is
+  # forced out to voting day so the run-up is visible even before it fills in.
+  xlim <- range(c(d$day, ELECTION$pre_campaign_from, ELECTION$voting_day))
+  ggplot() +
+    geom_rect(data = bands,
+              aes(xmin = from, xmax = to, ymin = -Inf, ymax = Inf, fill = phase),
+              alpha = 0.14) +
+    scale_fill_manual(values = c("Pre-campaign" = BRAND$accent,
+                                 "Nominations"  = BRAND$muted,
+                                 "Campaign"     = BRAND$warm), name = "Election phase") +
+    geom_vline(xintercept = ELECTION$voting_day, linetype = "22", colour = BRAND$warm) +
+    annotate("text", x = ELECTION$voting_day, y = Inf, label = "  Voting day",
+             hjust = 0, vjust = 1.6, size = pt(12), colour = BRAND$warm) +
+    geom_line(data = d, aes(day, n, colour = label), linewidth = 0.8) +
+    scale_x_date(limits = xlim, date_labels = "%b %d") +
+    scale_colour_brewer(palette = "Dark2", name = NULL) +
+    labs(x = NULL, y = "Comments per day",
+         title = "Locally actionable issues over time",
+         subtitle = sprintf("Voting day 2026-10-17 · currently %s", election_phase()),
+         caption = "Bands: Elections BC pre-campaign (Jul 20 - Sep 18), nominations (Sep 1-11), campaign (Sep 19 - Oct 17).") +
+    theme_okcp() + theme(legend.position = "bottom")
+}
+```
+
+## Row {height="40%"}
+
+```{r}
+#| title: "Local vs out-of-scope share, weekly"
+if (!nrow(issue_daily)) {
+  cat("No daily rollup yet.")
+} else {
+  d <- issue_daily |>
+    mutate(week = as.Date(cut(as.Date(day), "week")),
+           band = ifelse(scope %in% c("local","ballot","shared"),
+                         "Locally actionable", "Provincial / federal")) |>
+    group_by(week, band) |> summarise(n = sum(n_posts), .groups = "drop")
+  ggplot(d, aes(week, n, fill = band)) +
+    geom_col(position = "fill", width = 6) +
+    scale_fill_manual(values = c("Locally actionable" = BRAND$accent,
+                                 "Provincial / federal" = BRAND$warm), name = NULL) +
+    scale_y_continuous(labels = percent, expand = c(0, 0)) +
+    scale_x_date(date_labels = "%b %d") +
+    labs(x = NULL, y = "Share of issue mentions",
+         title = "How much of the anger is a council's to answer?") +
+    theme_okcp() + theme(legend.position = "bottom")
+}
+```
+
+# Issues
+
+```{r}
+#| title: "Issue register"
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet.")
+} else {
+  tab <- post_issues |> filter(issue_code != "none") |>
+    group_by(issue_code, scope) |>
+    summarise(mentions = n(), posts = n_distinct(post_id),
+              mean_salience = round(mean(salience, na.rm = TRUE), 2),
+              mean_confidence = round(mean(confidence, na.rm = TRUE), 2),
+              .groups = "drop") |>
+    mutate(Issue = issue_label(issue_code)) |>
+    arrange(desc(mentions)) |>
+    select(Issue, Scope = scope, Mentions = mentions, Posts = posts,
+           `Mean salience` = mean_salience, `Mean confidence` = mean_confidence)
+  knitr::kable(tab)
+}
+```
+
+# Network
+
+## Row
+
+```{r}
+#| title: "Reply network structure"
+if (!nrow(edges)) {
+  cat("No reply edges yet.")
+} else {
+  suppressMessages(library(igraph))
+  g <- graph_from_data_frame(
+    edges |> count(from_user_id, to_user_id, name = "weight") |>
+      mutate(across(1:2, as.character)), directed = TRUE)
+  gu <- as_undirected(g, mode = "collapse")
+  comp <- components(gu)
+  giant <- induced_subgraph(gu, which(comp$membership == which.max(comp$csize)))
+  stats <- data.frame(
+    Measure = c("Actors (nodes)", "Directed reply edges", "Density",
+                "Components", "Largest component", "Global transitivity",
+                "Mean distance (giant)", "Reciprocity"),
+    Value = c(gorder(g), gsize(g), sprintf("%.4f", edge_density(g)), comp$no,
+              sprintf("%d (%.0f%%)", max(comp$csize), 100*max(comp$csize)/gorder(g)),
+              sprintf("%.3f", transitivity(giant, "global")),
+              sprintf("%.2f", mean_distance(giant)),
+              sprintf("%.3f", reciprocity(g))))
+  knitr::kable(stats)
+}
+```
+
+::: {.provenance}
+Quote-replies are the only unambiguous reply signal in a flat phpBB thread, so
+this graph is **sparse by construction** and understates real interaction. A
+co-participation network (`R/sna.R`) is reported alongside it in the analysis
+layer; conclusions should not rest on the reply graph alone. ERGM is fitted
+weekly, not daily, and is suppressed rather than shown if it fails to converge.
+:::
+
+# Jurisdictions
+
+```{r}
+#| title: "Locally actionable mentions by community"
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet.")
+} else {
+  d <- post_issues |>
+    filter(!is.na(jurisdiction), jurisdiction != "unspecified",
+           scope %in% c("local","ballot","shared")) |>
+    count(jurisdiction, name = "n") |> slice_max(n, n = 15) |>
+    mutate(label = ifelse(jurisdiction %in% JURISDICTIONS$code,
+                          JURISDICTIONS$label[match(jurisdiction, JURISDICTIONS$code)],
+                          jurisdiction))
+  if (!nrow(d)) cat("No jurisdiction-tagged local issues yet.") else
+  ggplot(d, aes(reorder(label, n), n)) +
+    geom_col(fill = BRAND$accent, width = 0.7) +
+    geom_text(aes(label = comma(n)), hjust = -0.2, size = pt(12), colour = BRAND$ink) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.18)), labels = comma) +
+    coord_flip() +
+    labs(x = NULL, y = "Locally actionable mentions",
+         title = "Which communities the actionable discourse is about") +
+    theme_okcp()
+}
+```
+
+# Methods
+
+## Row
+
+::: {.card title="What this measures"}
+
+Comments on Castanet's public phpBB forums are coded against a codebook of BC
+local-government competencies drawn from the Community Charter and Local
+Government Act. The central judgement is **scope**: whether an issue is one a
+municipal council or regional board can act on, or a provincial/federal matter
+being directed at city hall.
+
+`ballot` is deliberately separate from `local` — school trustees and regional
+district electoral area directors are not municipal, but their seats are on the
+same 2026-10-17 ballot.
+
+:::
+
+::: {.card title="How comments are selected and coded"}
+
+A keyword sieve decides which comments are worth a model call. **The sieve is a
+recall filter, not a finding** — every figure on this dashboard excludes sieve
+rows and uses model codes only.
+
+The gate requires at least one locally-actionable candidate code. Comments
+whose only matches are federal or provincial (foreign affairs, party politics,
+courts, provincial highways) are not sent to the model, which cut eligible
+comments by 28% on the pilot corpus.
+
+Bulk coding runs on a small model; a stratified sample is re-coded by a larger
+one to **measure** agreement. The audit sample deliberately includes comments
+the gate *skipped*, so the false-negative rate is estimated rather than assumed.
+
+:::
+
+::: {.card title="Provenance and limits"}
+
+```{r}
+if (nrow(scrape_log)) {
+  knitr::kable(head(scrape_log[, c("run_at","mode","threads_seen","posts_new","errors")], 5))
+} else cat("No crawl log available.\n")
+```
+
+- **Post-moderation.** The captured corpus is what survived moderation; removed
+  comments and closed comment sections are invisible here.
+- **Not a survey.** Forum commenters are not a representative sample of
+  residents. Volume is a measure of discourse, not of public opinion.
+- **Concentration matters.** Volume is reported next to a Herfindahl index on
+  posts-per-actor, because a handful of prolific posters can manufacture the
+  appearance of a groundswell.
+- **No comment text or handles** appear here or in the underlying file this
+  page reads.
+
+:::
+
+```{r}
+#| output: asis
+cat(sprintf("<div class='provenance'>Corpus freshness: most recent comment %s.<br>%s &middot; %s</div>",
+            if (is.na(fresh_days)) "unknown" else
+              sprintf("%d day%s old", fresh_days, ifelse(fresh_days == 1, "", "s")),
+            BRAND$org, BRAND$product))
+```
+
+# Community pulse
+
+## Row {height="55%"}
+
+```{r}
+#| title: "Top 5 issues — everything people are talking about"
+# Deliberately UNFILTERED by scope. The rest of this dashboard is about what a
+# council can act on; this panel answers the different and equally useful
+# question of what the community is actually preoccupied with, including the
+# things city hall has no lever for.
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet.")
+} else {
+  d <- post_issues |> filter(issue_code != "none") |>
+    count(issue_code, scope, name = "n") |>
+    slice_max(n, n = 5) |>
+    mutate(label = issue_label(issue_code),
+           band = ifelse(scope %in% LOCAL_SCOPES, "Council can act", "Not council's to fix"))
+  ggplot(d, aes(reorder(label, n), n, fill = band)) +
+    geom_col(width = 0.68) +
+    geom_text(aes(label = comma(n)), hjust = -0.15, size = pt(12), colour = BRAND$ink) +
+    scale_fill_manual(values = c("Council can act" = BRAND$accent,
+                                 "Not council's to fix" = BRAND$warm), name = NULL) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.2)), labels = comma) +
+    coord_flip() +
+    labs(x = NULL, y = "Mentions",
+         title = "What the community is talking about",
+         subtitle = "All issues, regardless of which government owns them",
+         caption = "Colour marks whether a body elected on 2026-10-17 has authority over the issue.") +
+    theme_okcp() + theme(legend.position = "bottom")
+}
+```
+
+## Row {height="45%"}
+
+```{r}
+#| title: "Pulse summary"
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet.")
+} else {
+  top5 <- post_issues |> filter(issue_code != "none") |>
+    count(issue_code, scope, name = "mentions") |> slice_max(mentions, n = 5)
+  posts_n <- n_distinct(post_issues$post_id)
+  tab <- top5 |>
+    mutate(Issue = issue_label(issue_code),
+           Owner = ifelse(scope %in% LOCAL_SCOPES,
+                          "Elected 2026-10-17", "Provincial / federal"),
+           Share = percent(mentions / sum(top5$mentions), accuracy = 1)) |>
+    select(Issue, Scope = scope, Owner, Mentions = mentions, `Share of top 5` = Share)
+  knitr::kable(tab)
+}
+```
+
+# Local government filter
+
+```{r}
+#| title: "Issues a council, regional board or school board can act on"
+# The filter itself: a client-side searchable table. Static HTML, no server —
+# DataTables does the filtering in the browser, so this works on free CDN
+# hosting with no backend at all.
+if (!nrow(post_issues)) {
+  cat("No model-coded comments yet.")
+} else {
+  d <- post_issues |>
+    filter(issue_code != "none", scope %in% LOCAL_SCOPES) |>
+    group_by(issue_code, scope, jurisdiction) |>
+    summarise(mentions = n(), posts = n_distinct(post_id),
+              salience = round(mean(salience, na.rm = TRUE), 2),
+              confidence = round(mean(confidence, na.rm = TRUE), 2),
+              opposed = percent(mean(stance == "oppose", na.rm = TRUE), accuracy = 1),
+              .groups = "drop") |>
+    mutate(Issue = issue_label(issue_code),
+           Jurisdiction = ifelse(is.na(jurisdiction) | jurisdiction == "unspecified",
+                                 "(unspecified)", jurisdiction)) |>
+    arrange(desc(mentions)) |>
+    select(Issue, Scope = scope, Jurisdiction, Mentions = mentions, Posts = posts,
+           Salience = salience, Confidence = confidence, Opposed = opposed)
+  DT::datatable(d, rownames = FALSE, filter = "top",
+                extensions = "Buttons",
+                options = list(pageLength = 15, dom = "Bfrtip",
+                               buttons = list("copy", "csv"),
+                               order = list(list(3, "desc"))))
+}
+```
+
+::: {.provenance}
+`Scope` distinguishes **local** (direct municipal authority), **ballot** (school
+trustees and regional district electoral area directors — not municipal, but on
+the same ballot), and **shared** (a real local role, province holds the main
+levers). Filter boxes above each column are live; the CSV button exports what
+you have filtered to.
+:::
+
+# Emotion
+
+## Row {height="55%"}
+
+```{r}
+#| title: "Emotional register by issue (per 100 words)"
+# NRC returns RAW COUNTS which scale with comment length. On the pilot corpus,
+# "oppose" comments looked angrier than neutral ones purely because they are
+# 63% longer; normalising per 100 words reversed the comparison. Everything
+# here is normalised.
+if (!nrow(sentiment) || !nrow(post_issues)) {
+  cat("No sentiment scores yet — run score_sentiment().")
+} else {
+  top <- post_issues |> filter(issue_code != "none") |>
+    count(issue_code, name = "n") |> slice_max(n, n = 8) |> pull(issue_code)
+  d <- post_issues |> filter(issue_code %in% top) |>
+    inner_join(sentiment, by = "post_id") |>
+    mutate(across(c(anger, fear, trust, sadness),
+                  ~ 100 * .x / pmax(n_words, 1))) |>
+    group_by(issue_code, scope) |>
+    summarise(across(c(anger, fear, trust, sadness), ~ mean(.x, na.rm = TRUE)),
+              n = n(), .groups = "drop") |>
+    tidyr::pivot_longer(c(anger, fear, trust, sadness),
+                        names_to = "emotion", values_to = "rate") |>
+    mutate(label = issue_label(issue_code),
+           emotion = factor(emotion, c("anger","fear","sadness","trust")))
+  ggplot(d, aes(reorder(label, rate), rate, fill = emotion)) +
+    geom_col(position = "dodge", width = 0.75) +
+    scale_fill_manual(values = c(anger = "#C05621", fear = "#B08900",
+                                 sadness = "#6B7A82", trust = "#1F7A8C"), name = NULL) +
+    coord_flip() +
+    labs(x = NULL, y = "NRC emotion words per 100 words",
+         title = "Which issues carry which emotions",
+         caption = "Length-normalised. Raw NRC counts scale with comment length and are misleading.") +
+    theme_okcp() + theme(legend.position = "bottom")
+}
+```
+
+## Row {height="45%"}
+
+```{r}
+#| title: "The signal: emotion by who owns the issue"
+if (!nrow(sentiment) || !nrow(post_issues)) {
+  cat("No sentiment scores yet.")
+} else {
+  d <- post_issues |> filter(issue_code != "none") |>
+    inner_join(sentiment, by = "post_id") |>
+    mutate(band = ifelse(scope %in% LOCAL_SCOPES,
+                         "Council can act", "Not council's to fix"),
+           across(c(anger, fear, trust), ~ 100 * .x / pmax(n_words, 1))) |>
+    group_by(band) |>
+    summarise(across(c(anger, fear, trust), ~ mean(.x, na.rm = TRUE)),
+              words = mean(n_words, na.rm = TRUE), n = n(), .groups = "drop") |>
+    tidyr::pivot_longer(c(anger, fear, trust), names_to = "emotion", values_to = "rate")
+  ggplot(d, aes(emotion, rate, fill = band)) +
+    geom_col(position = "dodge", width = 0.65) +
+    geom_text(aes(label = sprintf("%.2f", rate)),
+              position = position_dodge(width = 0.65), vjust = -0.4,
+              size = pt(12), colour = BRAND$ink) +
+    scale_fill_manual(values = c("Council can act" = BRAND$accent,
+                                 "Not council's to fix" = BRAND$warm), name = NULL) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
+    labs(x = NULL, y = "Words per 100",
+         title = "The angriest discourse is about what a council cannot fix",
+         caption = "Length-normalised, so this is not an artifact of comment length.") +
+    theme_okcp() + theme(legend.position = "bottom")
+}
+```
+
+# Sources
+
+## Row {height="50%"}
+
+```{r}
+#| title: "Is each source earning its keep?"
+if (!nrow(src_daily)) {
+  cat("No source accounting yet — run rebuild_source_daily().")
+} else {
+  sc <- src_daily |> group_by(source_id) |>
+    summarise(days = n_distinct(day), posts = sum(n_posts),
+              coded = sum(n_coded), local = sum(n_local),
+              pct_local = ifelse(sum(n_coded) > 0, sum(n_local)/sum(n_coded), NA_real_),
+              mean_hhi = mean(hhi, na.rm = TRUE),
+              novel = sum(novel_issues), .groups = "drop") |>
+    mutate(local_per_day = round(local / pmax(days, 1), 2),
+           pct_local = percent(pct_local, accuracy = 1),
+           mean_hhi = round(mean_hhi, 2)) |>
+    left_join(select(sources_tbl, source_id, platform, access), by = "source_id") |>
+    arrange(desc(local_per_day)) |>
+    select(Source = source_id, Platform = platform, Access = access,
+           Days = days, Posts = posts, Coded = coded,
+           `In-scope/day` = local_per_day, `% in scope` = pct_local,
+           Concentration = mean_hhi, `Novel issues` = novel)
+  knitr::kable(sc)
+}
+```
+
+## Row {height="50%"}
+
+```{r}
+#| title: "Source registry and access posture"
+if (!nrow(sources_tbl)) {
+  cat("No source registry.")
+} else {
+  knitr::kable(sources_tbl |>
+    mutate(Reply = ifelse(has_reply_edges, "yes", "no"),
+           Active = ifelse(active, "yes", "no")) |>
+    select(Source = source_id, Name = name, Platform = platform,
+           Access = access, Cost = cost_note, `Reply edges` = Reply, Active))
+}
+```
+
+::: {.provenance}
+Sources are not interchangeable. Only platforms with stable pseudonymous IDs
+and resolvable reply structure (`Reply edges = yes`) can support network
+analysis at all; the rest contribute volume, issue mix and sentiment only.
+**`In-scope/day`** — locally actionable comments per active day — is the honest
+headline, because it rewards a source for producing material a council can act
+on rather than for sheer volume. Access postures were verified on the dates
+recorded in the registry and should be re-checked before any new crawl.
+:::
