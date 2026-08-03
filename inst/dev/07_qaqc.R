@@ -8,10 +8,17 @@
 suppressMessages({library(DBI); library(dplyr)})
 source("R/taxonomy.R")
 
-FAILED <- 0L
+FAILED <- 0L; SKIPPED <- 0L
 res <- function(ok, lbl, detail = "") {
   if (!ok) FAILED <<- FAILED + 1L
   cat(sprintf("  [%s] %-50s %s\n", if (ok) "ok" else "FAIL", lbl, detail))
+}
+# The DuckDB files are deliberately not committed, so CI cannot run the data
+# checks. Skipping is not the same as passing: a skip is reported and does not
+# affect the exit code, but it is never silent.
+skip <- function(lbl, why) {
+  SKIPPED <<- SKIPPED + 1L
+  cat(sprintf("  [skip] %-50s %s\n", lbl, why))
 }
 section <- function(x) cat("\n== ", x, " ==\n", sep = "")
 
@@ -29,7 +36,7 @@ if (file.exists(serve)) {
   }
   res(length(leaks) == 0, "serve DB carries no text/handle columns", paste(leaks, collapse = " "))
   dbDisconnect(con, shutdown = TRUE)
-} else res(FALSE, "serve DB exists", "run export_serve_db()")
+} else skip("serve DB disclosure check", "db/serve.duckdb absent (expected in CI)")
 
 # Published artifacts must not contain any comment fragment or handle.
 if (file.exists("db/civic_pulse.duckdb") && file.exists("docs/index.html")) {
@@ -78,7 +85,7 @@ res(length(bad) == 0, sprintf("all %d R files parse", length(files)), paste(bad,
 # ---------------------------------------------------------------- data ------
 section("3. DATA INTEGRITY")
 if (!file.exists("db/civic_pulse.duckdb")) {
-  res(FALSE, "ingest DB exists")
+  skip("data integrity checks", "db/civic_pulse.duckdb absent (expected in CI)")
 } else {
   con <- dbConnect(duckdb::duckdb(), "db/civic_pulse.duckdb", read_only = TRUE)
   q <- function(sql) dbGetQuery(con, sql)[[1]]
@@ -121,6 +128,6 @@ if (inherits(cb, "error")) {
       "codebook.R and taxonomy.R agree on version")
 }
 
-cat(sprintf("\n%s  %d check(s) failed\n",
-            if (FAILED == 0) "PASS —" else "FAIL —", FAILED))
+cat(sprintf("\n%s  %d failed, %d skipped\n",
+            if (FAILED == 0) "PASS —" else "FAIL —", FAILED, SKIPPED))
 quit(status = if (FAILED == 0) 0 else 1)

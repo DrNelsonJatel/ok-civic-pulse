@@ -83,7 +83,21 @@ inst/dev/00_init_db.R    schema + forum registry
 inst/dev/01_backfill.R   staged, resumable, budgeted backfill
 inst/dev/02_daily.R      daily incremental (pure R, no Python)
 inst/dev/03_weekly.R     weekly enrichment (topics, LSX, ERGM, Python visuals)
+inst/dev/04_migrate_sources.R  one-off: source meta-tagging migration
+inst/dev/05_reddit_check.R     Reddit connection check (PARKED - see below)
+inst/dev/06_daily_report.R     render the branded daily brief
+inst/dev/07_qaqc.R             QAQC suite; gates CI
 ```
+
+## Reddit is parked, deliberately
+
+Reddit's Responsible Builder Policy requires research to go through the Reddit
+for Researchers programme, requires explicit prior approval, and **prohibits
+inferring political affiliation about users** — which is what actor-level
+stance modelling and ERGMs on Reddit accounts amount to. The collector in
+`R/reddit.R` is correct and tested but is not called, and both Reddit sources
+are `active = FALSE` with access `blocked_by_policy`. Cost was never the
+blocker.
 
 ## The codebook is versioned data
 
@@ -137,6 +151,31 @@ daily run costs a few pages instead of re-walking the whole thread.
 **DuckDB is single-writer.** The ingest holds an exclusive lock — even a
 read-only connection fails while it runs. The dashboard therefore reads a
 separate exported copy, never the live ingest file.
+
+## After cloning — do this first
+
+`core.hooksPath` is local config and is NOT cloned, so the disclosure guard
+must be enabled by hand:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The pre-commit hook blocks any commit containing a `.duckdb` file, a batch
+metadata RDS (those embed `body_local`), `output/py_local/`, `.Renviron`, or a
+pasted API key. A text leak is the one mistake here that cannot be undone once
+pushed, so it fails closed.
+
+## QAQC
+
+```bash
+Rscript inst/dev/07_qaqc.R   # exits non-zero on any failure; gates CI
+```
+
+Disclosure checks run first and include a real leak test: comment fragments and
+non-staff handles are searched for inside the rendered `docs/index.html`. Data
+checks report as **skipped** (never as passing) when the uncommitted DuckDB
+files are absent, which is the normal state in CI.
 
 ## Run
 

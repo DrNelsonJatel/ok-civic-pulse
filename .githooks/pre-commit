@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Pre-commit disclosure guard.
+#
+# A text leak is the only mistake in this repo that cannot be undone once
+# pushed, so it is blocked here rather than caught in review. Fails CLOSED.
+set -euo pipefail
+
+staged=$(git diff --cached --name-only)
+[ -z "$staged" ] && exit 0
+
+risky=$(echo "$staged" | grep -E '\.duckdb$|output/batch_.*\.rds$|output/py_local/|\.Renviron$|credentials\.sqlite$' || true)
+if [ -n "$risky" ]; then
+  echo "BLOCKED: these files carry comment text or credentials:" >&2
+  echo "$risky" | sed 's/^/  /' >&2
+  echo "They are gitignored for a reason. Use 'git reset HEAD <file>'." >&2
+  exit 1
+fi
+
+# An API key pasted into a script.
+if echo "$staged" | xargs -r grep -lE 'sk-ant-[A-Za-z0-9_-]{20,}' 2>/dev/null | grep -q .; then
+  echo "BLOCKED: an Anthropic API key appears in a staged file." >&2
+  exit 1
+fi
+exit 0
