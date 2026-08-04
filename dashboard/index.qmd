@@ -5,7 +5,7 @@ title: "Okanagan Civic Pulse"
 ```{r setup}
 #| include: false
 # Rendered from dashboard/, so repo paths are relative to the parent.
-for (f in c("theme_okcp.R", "election.R", "taxonomy.R"))
+for (f in c("theme_okcp.R", "election.R", "taxonomy.R", "findings.R"))
   source(file.path("..", "R", f))
 suppressMessages({library(DBI); library(dplyr); library(ggplot2); library(scales)})
 
@@ -25,10 +25,13 @@ if (HAVE_DATA) {
   sentiment   <- tryCatch(dbGetQuery(con, "SELECT * FROM sentiment"), error = function(e) data.frame())
   src_daily   <- tryCatch(dbGetQuery(con, "SELECT * FROM source_daily"), error = function(e) data.frame())
   sources_tbl <- tryCatch(dbGetQuery(con, "SELECT * FROM sources"), error = function(e) data.frame())
+  ergm_fit    <- tryCatch(dbGetQuery(con, "SELECT * FROM ergm_fit"), error = function(e) data.frame())
+  net_tl      <- tryCatch(dbGetQuery(con, "SELECT * FROM net_timeline"), error = function(e) data.frame())
+  turnover    <- tryCatch(dbGetQuery(con, "SELECT * FROM actor_turnover"), error = function(e) data.frame())
   dbDisconnect(con, shutdown = TRUE)
 } else {
   issue_daily <- post_issues <- posts_meta <- edges <- nodes <- scrape_log <-
-    sentiment <- src_daily <- sources_tbl <- data.frame()
+    sentiment <- src_daily <- sources_tbl <- ergm_fit <- net_tl <- turnover <- data.frame()
 }
 
 LOCAL_SCOPES <- c("local", "ballot", "shared")
@@ -96,7 +99,7 @@ if (!nrow(post_issues)) {
     labs(x = NULL, y = "Issue mentions",
          title = "Scope of governance issues raised",
          subtitle = "local / ballot / shared are actionable by bodies elected 2026-10-17",
-         caption = "Aggregate counts from model-coded comments. Keyword-sieve rows excluded.") +
+         caption = cap("Aggregate counts from model-coded comments. Keyword-sieve rows excluded.")) +
     theme_okcp()
 }
 ```
@@ -158,7 +161,7 @@ if (!nrow(issue_daily)) {
     labs(x = NULL, y = "Comments per day",
          title = "Locally actionable issues over time",
          subtitle = sprintf("Voting day 2026-10-17 · currently %s", election_phase()),
-         caption = "Bands: Elections BC pre-campaign (Jul 20 - Sep 18), nominations (Sep 1-11), campaign (Sep 19 - Oct 17).") +
+         caption = cap("Bands: Elections BC pre-campaign (Jul 20 - Sep 18), nominations (Sep 1-11), campaign (Sep 19 - Oct 17).")) +
     theme_okcp() + theme(legend.position = "bottom")
 }
 ```
@@ -207,43 +210,6 @@ if (!nrow(post_issues)) {
   knitr::kable(tab)
 }
 ```
-
-# Network
-
-## Row
-
-```{r}
-#| title: "Reply network structure"
-if (!nrow(edges)) {
-  cat("No reply edges yet.")
-} else {
-  suppressMessages(library(igraph))
-  g <- graph_from_data_frame(
-    edges |> count(from_user_id, to_user_id, name = "weight") |>
-      mutate(across(1:2, as.character)), directed = TRUE)
-  gu <- as_undirected(g, mode = "collapse")
-  comp <- components(gu)
-  giant <- induced_subgraph(gu, which(comp$membership == which.max(comp$csize)))
-  stats <- data.frame(
-    Measure = c("Actors (nodes)", "Directed reply edges", "Density",
-                "Components", "Largest component", "Global transitivity",
-                "Mean distance (giant)", "Reciprocity"),
-    Value = c(gorder(g), gsize(g), sprintf("%.4f", edge_density(g)), comp$no,
-              sprintf("%d (%.0f%%)", max(comp$csize), 100*max(comp$csize)/gorder(g)),
-              sprintf("%.3f", transitivity(giant, "global")),
-              sprintf("%.2f", mean_distance(giant)),
-              sprintf("%.3f", reciprocity(g))))
-  knitr::kable(stats)
-}
-```
-
-::: {.provenance}
-Quote-replies are the only unambiguous reply signal in a flat phpBB thread, so
-this graph is **sparse by construction** and understates real interaction. A
-co-participation network (`R/sna.R`) is reported alongside it in the analysis
-layer; conclusions should not rest on the reply graph alone. ERGM is fitted
-weekly, not daily, and is suppressed rather than shown if it fails to converge.
-:::
 
 # Jurisdictions
 
@@ -362,7 +328,7 @@ if (!nrow(post_issues)) {
     labs(x = NULL, y = "Mentions",
          title = "What the community is talking about",
          subtitle = "All issues, regardless of which government owns them",
-         caption = "Colour marks whether a body elected on 2026-10-17 has authority over the issue.") +
+         caption = cap("Colour marks whether a body elected on 2026-10-17 has authority over the issue.")) +
     theme_okcp() + theme(legend.position = "bottom")
 }
 ```
@@ -460,7 +426,7 @@ if (!nrow(sentiment) || !nrow(post_issues)) {
     coord_flip() +
     labs(x = NULL, y = "NRC emotion words per 100 words",
          title = "Which issues carry which emotions",
-         caption = "Length-normalised. Raw NRC counts scale with comment length and are misleading.") +
+         caption = cap("Length-normalised. Raw NRC counts scale with comment length and are misleading.")) +
     theme_okcp() + theme(legend.position = "bottom")
 }
 ```
@@ -491,7 +457,7 @@ if (!nrow(sentiment) || !nrow(post_issues)) {
     scale_y_continuous(expand = expansion(mult = c(0, 0.2))) +
     labs(x = NULL, y = "Words per 100",
          title = "The angriest discourse is about what a council cannot fix",
-         caption = "Length-normalised, so this is not an artifact of comment length.") +
+         caption = cap("Length-normalised, so this is not an artifact of comment length.")) +
     theme_okcp() + theme(legend.position = "bottom")
 }
 ```
@@ -547,4 +513,425 @@ analysis at all; the rest contribute volume, issue mix and sentiment only.
 headline, because it rewards a source for producing material a council can act
 on rather than for sheer volume. Access postures were verified on the dates
 recorded in the registry and should be re-checked before any new crawl.
+:::
+
+# Network
+
+## Row {height="52%"}
+
+```{r}
+#| title: "Reply network — who answers whom"
+#| fig-width: 7.5
+#| fig-height: 5
+# SNA plotting practice applied here:
+#  * layout seeded, so the figure is reproducible across renders
+#  * node SIZE encodes degree, node COLOUR encodes community — two variables,
+#    two channels, stated in the legend rather than left to be guessed
+#  * edges drawn under nodes at low alpha so structure reads through hubs
+#  * NO node labels: they are hashed ids that identify nobody and would only
+#    add clutter
+#  * n, m and density are in the caption, because a network picture without
+#    them is decorative rather than evidential
+if (!nrow(edges)) {
+  cat("No reply edges yet.")
+} else {
+  suppressMessages({library(igraph); library(ggraph); library(tidygraph)})
+  el <- edges |> filter(!is.na(from_user_id), !is.na(to_user_id),
+                        from_user_id != to_user_id) |>
+    count(from_user_id, to_user_id, name = "weight") |>
+    mutate(across(1:2, as.character))
+  g <- graph_from_data_frame(el, directed = TRUE)
+  comp <- components(as_undirected(g, mode = "collapse"))
+  g <- induced_subgraph(g, which(comp$membership == which.max(comp$csize)))
+  set.seed(42)
+  # Louvain is defined for UNDIRECTED graphs only — group_louvain() on a
+  # directed tbl_graph errors out. Detect communities on an undirected copy,
+  # then attach the membership back to the directed graph, which is what the
+  # layout and the arrowheads need.
+  memb <- membership(cluster_louvain(as_undirected(g, mode = "collapse")))
+  tg <- as_tbl_graph(g) |>
+    mutate(deg = centrality_degree(mode = "all"),
+           community = as.factor(unname(memb[name])))
+  ggraph(tg, layout = "fr") +
+    geom_edge_link(aes(width = weight), alpha = 0.18, colour = BRAND$ink,
+                   show.legend = FALSE) +
+    scale_edge_width(range = c(0.2, 1.1)) +
+    geom_node_point(aes(size = deg, colour = community), alpha = 0.88) +
+    scale_size_continuous(range = c(1.6, 8), name = "Replies (degree)") +
+    scale_colour_brewer(palette = "Dark2", guide = "none") +
+    labs(title = "Reply network, largest connected component",
+         subtitle = "Colour = community (Louvain); size = number of replies sent or received",
+         # Caption lines must be short enough not to clip at the panel edge —
+         # the first version ran off the right and truncated mid-sentence.
+         caption = cap(sprintf(
+           "%d actors, %d directed ties, density %.4f.\nAn edge is a quote-reply: A quoted B's specific post.\nStaff accounts and self-quotes excluded; node ids are hashes, not shown.",
+           gorder(tg), gsize(tg), edge_density(tg)))) +
+    theme_graph(base_family = "") +
+    theme(text = element_text(size = 13, colour = BRAND$ink),
+          plot.title = element_text(size = 16, face = "bold"),
+          plot.subtitle = element_text(size = 12, colour = BRAND$muted),
+          plot.caption = element_text(size = 12, colour = BRAND$muted, hjust = 0),
+          legend.text = element_text(size = 12), legend.title = element_text(size = 12),
+          legend.position = "right")
+}
+```
+
+```{r}
+#| title: "Degree distribution"
+#| fig-width: 5
+#| fig-height: 5
+if (!nrow(edges)) {
+  cat("No reply edges yet.")
+} else {
+  suppressMessages(library(igraph))
+  el <- edges |> filter(from_user_id != to_user_id) |>
+    count(from_user_id, to_user_id, name = "weight") |> mutate(across(1:2, as.character))
+  g <- graph_from_data_frame(el, directed = TRUE)
+  d <- data.frame(deg = degree(g, mode = "all"))
+  ggplot(d, aes(deg)) +
+    geom_histogram(binwidth = 1, fill = BRAND$accent, colour = "white", linewidth = 0.2) +
+    scale_x_continuous(breaks = scales::pretty_breaks()) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+    labs(x = "Degree (replies sent + received)", y = "Number of actors",
+         title = "Participation is heavily skewed",
+         caption = cap(sprintf("Median %d, max %d. A long tail of one-reply actors with a small core of hubs\nis the expected shape; it is why volume is always reported next to concentration.",
+                           median(d$deg), max(d$deg)))) +
+    theme_okcp(13)
+}
+```
+
+## Row {height="48%"}
+
+```{r}
+#| title: "Structure of both networks"
+if (!nrow(edges)) {
+  cat("No reply edges yet.")
+} else {
+  suppressMessages(library(igraph))
+  # Reply network
+  el <- edges |> filter(from_user_id != to_user_id) |>
+    count(from_user_id, to_user_id, name = "weight") |> mutate(across(1:2, as.character))
+  gr <- graph_from_data_frame(el, directed = TRUE)
+  # Co-participation: actors who posted in the same thread
+  cop <- posts_meta |> filter(!is.na(actor_key)) |> distinct(actor_key, thread_t)
+  gc <- NULL
+  if (nrow(cop) > 10) {
+    bi <- graph_from_data_frame(mutate(cop, thread_t = paste0("t", thread_t)), directed = FALSE)
+    V(bi)$type <- startsWith(V(bi)$name, "t")
+    pr <- bipartite_projection(bi, which = "false")
+    gc <- subgraph_from_edges(pr, which(E(pr)$weight >= 2), delete.vertices = TRUE)
+  }
+  desc <- function(g) {
+    if (is.null(g) || gorder(g) == 0) return(rep(NA, 6))
+    gg <- if (is_directed(g)) as_undirected(g, mode = "collapse") else g
+    cm <- components(gg); gt <- induced_subgraph(gg, which(cm$membership == which.max(cm$csize)))
+    c(gorder(g), gsize(g), round(edge_density(g), 4), cm$no,
+      round(transitivity(gt, "global"), 3), round(mean_distance(gt), 2))
+  }
+  tab <- data.frame(
+    Measure = c("Actors", "Ties", "Density", "Components", "Transitivity", "Mean distance"),
+    `Reply (directed)` = desc(gr), `Co-participation (>=2 threads)` = desc(gc),
+    check.names = FALSE)
+  knitr::kable(tab)
+}
+```
+
+```{r}
+#| title: "Small-world test"
+if (!nrow(edges)) {
+  cat("No reply edges yet.")
+} else {
+  suppressMessages(library(igraph))
+  el <- edges |> filter(from_user_id != to_user_id) |>
+    count(from_user_id, to_user_id, name = "weight") |> mutate(across(1:2, as.character))
+  g <- as_undirected(graph_from_data_frame(el, directed = TRUE), mode = "collapse")
+  cm <- components(g); gt <- induced_subgraph(g, which(cm$membership == which.max(cm$csize)))
+  set.seed(42)
+  sims <- replicate(50, {
+    r <- sample_gnm(gorder(gt), gsize(gt))
+    c(C = transitivity(r, "global"), L = mean_distance(r, unconnected = TRUE))
+  })
+  Co <- transitivity(gt, "global"); Lo <- mean_distance(gt)
+  Cr <- mean(sims["C", ], na.rm = TRUE); Lr <- mean(sims["L", ], na.rm = TRUE)
+  knitr::kable(data.frame(
+    Measure = c("Clustering C (observed)", "Clustering C (random)",
+                "Path length L (observed)", "Path length L (random)",
+                "Small-world sigma"),
+    Value = c(round(Co, 3), round(Cr, 3), round(Lo, 2), round(Lr, 2),
+              round((Co / Cr) / (Lo / Lr), 2))))
+}
+```
+
+::: {.provenance}
+**Sigma above 1 indicates small-world structure** — clustering far above a
+random graph of the same size and density, with comparable path lengths.
+Compared against 50 Erdős–Rényi graphs, averaged over reachable pairs because
+random graphs at this density are frequently disconnected.
+
+**Read both networks together.** Quote-replies are the only unambiguous reply
+signal in a flat phpBB thread, so the reply graph is sparse by construction and
+understates real interaction. Co-participation is denser but weaker evidence:
+two people in the same thread may never have addressed each other. A finding
+that holds in only one of the two should say so.
+
+**A caution on communities.** Louvain optimises modularity and always returns a
+partition — even for a random graph — and its resolution limit hides small
+groups. On this corpus the split is substantially by *thread*, not by stable
+faction. A statistically validated backbone of the co-participation graph
+(disparity filter, α = 0.05) reduced 3,723 raw ties to **15**: nearly all
+apparent co-participation is explained by how active each actor is, not by
+genuine affinity. Treat community structure as descriptive, not as evidence of
+organised blocs.
+
+**ERGM is fitted weekly and is currently suppressed.** MCMC did not mix on this
+graph, and `fit_ergm()` reports the failure rather than printing coefficients
+from a degenerate model. At 231 ties that is the expected outcome, not a bug —
+it needs a larger corpus before the model is identifiable.
+:::
+
+## Row {height="50%"}
+
+```{r}
+#| title: "Network over time — growth, cohesion and turnover"
+#| fig-width: 7.5
+#| fig-height: 4.2
+# LONGITUDINAL view. A single snapshot cannot tell a stable community from one
+# that reassembles from different people every month, which is exactly what
+# the retention series below shows is happening here.
+if (!nrow(net_tl)) {
+  cat("No timeline yet — run inst/dev/03_weekly.R.")
+} else {
+  d <- net_tl |> filter(view == "per-window") |>
+    mutate(window = as.Date(window)) |>
+    select(window, Actors = actors, Ties = ties,
+           `Density` = density, `Transitivity` = transitivity) |>
+    tidyr::pivot_longer(-window, names_to = "measure", values_to = "value") |>
+    mutate(measure = factor(measure, c("Actors","Ties","Density","Transitivity")))
+  ggplot(d, aes(window, value)) +
+    geom_line(colour = BRAND$accent, linewidth = 0.9) +
+    geom_point(colour = BRAND$accent, size = 2.2) +
+    facet_wrap(~measure, scales = "free_y", nrow = 2) +
+    scale_x_date(date_labels = "%b %Y") +
+    labs(x = NULL, y = NULL,
+         title = "The network is growing and thinning at the same time",
+         caption = cap("Per-window (not cumulative). Density falls as actors join — expected. Falling transitivity\nmeans new participants are not closing triangles: the network is widening, not consolidating.")) +
+    theme_okcp(13) + theme(strip.text = element_text(size = 13, face = "bold"))
+}
+```
+
+```{r}
+#| title: "Actor retention month to month"
+#| fig-width: 5
+#| fig-height: 4.2
+if (!nrow(turnover)) {
+  cat("No turnover data yet.")
+} else {
+  d <- turnover |> mutate(window = as.Date(window))
+  ggplot(d, aes(window, retention)) +
+    geom_col(fill = BRAND$accent, width = 20) +
+    geom_text(aes(label = scales::percent(retention, accuracy = 1)),
+              vjust = -0.4, size = pt(12), colour = BRAND$ink) +
+    scale_y_continuous(labels = scales::percent,
+                       expand = expansion(mult = c(0, 0.22)), limits = c(0, 1)) +
+    scale_x_date(date_labels = "%b %Y") +
+    labs(x = NULL, y = "Share of last month's actors still posting",
+         title = "This is a revolving cast, not a stable community",
+         caption = cap("Most participants each month are new. Treat 'community structure'\nas thread-level co-presence, not organised factions.")) +
+    theme_okcp(13)
+}
+```
+
+## Row {height="50%"}
+
+```{r}
+#| title: "ERGM — what predicts a reply tie"
+#| fig-width: 6
+#| fig-height: 3.6
+# Coefficient plot with 95% CIs. An ERGM table of numbers is unreadable; the
+# plot makes the one substantive result immediately legible.
+if (!nrow(ergm_fit) || all(is.na(ergm_fit$estimate))) {
+  cat(if (nrow(ergm_fit)) paste("ERGM suppressed:", ergm_fit$reason[1]) else "No ERGM fit yet.")
+} else {
+  d <- ergm_fit |> filter(!is.na(estimate)) |>
+    mutate(lo = estimate - 1.96 * std_error, hi = estimate + 1.96 * std_error,
+           sig = p_value < 0.05)
+  ggplot(d, aes(estimate, reorder(term, estimate))) +
+    geom_vline(xintercept = 0, linetype = "22", colour = BRAND$muted) +
+    geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.14, colour = BRAND$ink) +
+    geom_point(aes(colour = sig), size = 3.4) +
+    scale_colour_manual(values = c("TRUE" = BRAND$accent, "FALSE" = BRAND$muted),
+                        guide = "none") +
+    labs(x = "Log-odds estimate (95% CI)", y = NULL,
+         title = sprintf("Reciprocity dominates (spec: %s)", d$spec[1]),
+         caption = cap(sprintf("n = %d actors, %d ties. Negative `edges` = the network is sparse.\nA positive `mutual` means a tie is far more likely when the reverse tie exists.",
+                           d$n[1], d$m[1]))) +
+    theme_okcp(13)
+}
+```
+
+```{r}
+#| title: "Small-world: observed vs random"
+#| fig-width: 6
+#| fig-height: 3.6
+if (!nrow(edges)) {
+  cat("No reply edges yet.")
+} else {
+  suppressMessages(library(igraph))
+  el <- edges |> filter(from_user_id != to_user_id) |>
+    count(from_user_id, to_user_id, name = "w") |> mutate(across(1:2, as.character))
+  g <- as_undirected(graph_from_data_frame(el, directed = TRUE), mode = "collapse")
+  cm <- components(g); gt <- induced_subgraph(g, which(cm$membership == which.max(cm$csize)))
+  set.seed(42)
+  sims <- replicate(50, {
+    r <- sample_gnm(gorder(gt), gsize(gt))
+    c(C = transitivity(r, "global"), L = mean_distance(r, unconnected = TRUE)) })
+  d <- data.frame(
+    measure = rep(c("Clustering (C)", "Path length (L)"), each = 2),
+    which   = rep(c("Observed", "Random"), 2),
+    value   = c(transitivity(gt, "global"), mean(sims["C", ], na.rm = TRUE),
+                mean_distance(gt),          mean(sims["L", ], na.rm = TRUE)))
+  sigma <- (d$value[1] / d$value[2]) / (d$value[3] / d$value[4])
+  ggplot(d, aes(which, value, fill = which)) +
+    geom_col(width = 0.62) +
+    geom_text(aes(label = round(value, 3)), vjust = -0.35, size = pt(12), colour = BRAND$ink) +
+    facet_wrap(~measure, scales = "free_y") +
+    scale_fill_manual(values = c(Observed = BRAND$accent, Random = BRAND$muted), guide = "none") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.22))) +
+    labs(x = NULL, y = NULL,
+         title = sprintf("Small-world sigma = %.2f", sigma),
+         caption = cap("Clustering far above a random graph of matched size and density, with comparable\npath lengths. Sigma > 1 indicates small-world structure. 50 Erdos-Renyi baselines.")) +
+    theme_okcp(13) + theme(strip.text = element_text(size = 13, face = "bold"))
+}
+```
+
+# Action
+
+## Row {height="70%"}
+
+```{r}
+#| title: "Key take-home points"
+#| output: asis
+# GENERATED from the data on every render — see R/findings.R. Hardcoded
+# findings are true the day they are written and quietly false afterwards.
+# Every point carries its evidence and a stated confidence, because a
+# dashboard that never reports its own limits invites over-reading.
+f <- tryCatch(generate_findings(post_issues, posts_meta, issue_daily, sentiment,
+                                src_daily, edges, max_n = 10L),
+              error = function(e) NULL)
+if (is.null(f) || !nrow(f)) {
+  cat("_Not enough coded data to generate findings._\n")
+} else {
+  badge <- c(strong = "1F7A8C", provisional = "B08900", weak = "C05621")
+  for (i in seq_len(nrow(f))) {
+    col <- badge[[f$confidence[i]]]
+    cat(sprintf(
+"::: {style=\"border-left:4px solid #%s; padding:6px 0 6px 12px; margin-bottom:14px;\"}
+**%d. %s**  <span style=\"background:#%s;color:white;padding:1px 7px;border-radius:9px;font-size:11px;text-transform:uppercase;\">%s</span>
+
+%s
+
+*So what:* %s
+
+<span style=\"color:#6B7A82;font-size:12.5px;\">Confidence — %s</span>
+:::\n\n",
+      col, i, f$headline[i], col, f$confidence[i],
+      f$evidence[i], f$action[i], f$why[i]))
+  }
+}
+```
+
+## Row {height="30%"}
+
+::: {.card title="Methods"}
+
+**Corpus.** Public comments from Castanet's phpBB forums (nine forums, Okanagan
+and BC) and agenda items plus public-hearing testimony from City of Kelowna
+council records via eScribe. Every row records its `source_id`, so any figure
+can be decomposed by source.
+
+**Coding.** Each comment is coded against `codebook/codebook.yml` — a
+content-hashed, versioned codebook of BC local-government competencies drawn
+from the Community Charter and Local Government Act. The central variable is
+**scope**: which order of government owns the issue. `ballot` is separate from
+`local` because school trustees and regional district electoral area directors
+are not municipal but appear on the same 2026-10-17 ballot. Every coded row
+stores the codebook version that produced it, so revising a definition never
+silently rewrites already-coded history.
+
+**Classifier.** `claude-opus-5`, with structured outputs and a versioned
+prompt. A keyword sieve runs first but is a **recall filter, not a finding** —
+every figure here excludes sieve rows. An earlier cheaper tier was rejected on
+measurement: it scored kappa 0.39 against Opus 5 on the scope judgement and
+systematically under-called "local". Where multiple coders exist for a post,
+strict precedence applies (human > Opus 5 > Sonnet 5 > Haiku) so figures never
+average classifiers of different quality.
+
+**Sentiment.** `sentimentr` polarity plus NRC emotion, **normalised per 100
+words**. Raw NRC counts scale with comment length and produced a reversed
+result before normalisation. Lexicon polarity failed to separate model-coded
+stance (+0.03 oppose vs +0.09 support) and is therefore not reported as a
+finding.
+
+**Networks.** Two, deliberately. The *reply* network is directed and built from
+blockquote citations, which resolve both the quoted user and the exact quoted
+post — unambiguous but sparse. The *co-participation* network is denser but
+weaker evidence. A disparity-filter backbone reduced 3,723 co-participation
+ties to 15, indicating that nearly all apparent co-participation reflects
+activity level rather than affinity. ERGM is fitted weekly over a ladder of
+specifications and suppressed if none converges.
+
+:::
+
+::: {.card title="Limitations"}
+
+- **Pilot scale.** Hundreds of items over an uneven window weighted to summer,
+  when council agendas are thin.
+- **Classifier agreement against a human standard is not yet measured.** The
+  audit harness exists and a stratified sample is drawn; the figure is pending.
+- **Discourse is not opinion.** Forum commenters are not a representative
+  sample of residents. Volume measures attention, not public support.
+- **Post-moderation corpus.** Removed comments and closed comment sections are
+  invisible.
+- **Council coverage is partial.** Matters reaching council through staff
+  reports rather than numbered agenda items are not captured, so a zero in the
+  agenda column may mean "not in this view" rather than "ignored".
+- **Networks understate interaction.** Quoting is the only reply signal
+  available in a flat phpBB thread.
+
+:::
+
+# Library
+
+```{r}
+#| title: "Report archive"
+# Reports are generated artifacts, not tracked in git, so this indexes whatever
+# exists on disk rather than assuming a fixed set.
+rd <- file.path("..", "output", "reports")
+files <- if (dir.exists(rd)) list.files(rd, pattern = "\\.pdf$", full.names = TRUE) else character()
+if (!length(files)) {
+  cat("No reports generated yet.\n\nRun `Rscript inst/dev/06_daily_report.R` to produce one.")
+} else {
+  info <- file.info(files)
+  d <- data.frame(
+    file = basename(files),
+    date = as.Date(sub(".*?(\\d{4}-\\d{2}-\\d{2})\\.pdf$", "\\1", basename(files))),
+    size = paste0(round(info$size / 1024), " KB"),
+    stringsAsFactors = FALSE)
+  d <- d[order(d$date, decreasing = TRUE), ]
+  d$Year <- format(d$date, "%Y"); d$Month <- format(d$date, "%B")
+  d$Report <- sprintf("[%s](../output/reports/%s)", d$file, d$file)
+  knitr::kable(d[, c("Year", "Month", "date", "Report", "size")],
+               col.names = c("Year", "Month", "Date", "Report", "Size"),
+               row.names = FALSE)
+}
+```
+
+::: {.provenance}
+Briefs are **generated artifacts** and are not committed to the repository —
+they regenerate from `report/daily.qmd` against the current corpus. The daily
+driver refuses to render if the corpus is more than three days stale, so a
+brief dated today is never built from week-old data.
+
+Every brief is de-texted: aggregate counts, issue codes and network structure
+only. No comment text, no handles, no speaker names.
 :::

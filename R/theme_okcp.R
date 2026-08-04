@@ -55,3 +55,21 @@ theme_okcp <- function(base_size = 13) {
 # geom_text/geom_label take size in MILLIMETRES, not points — a bare size=12
 # there is ~34pt. Always route through this.
 pt <- function(x = MIN_PT) x / .pt
+
+# Wrap caption text to a fixed character width.
+#
+# ggplot does NOT wrap captions: a long single line runs off the right edge of
+# the panel and is silently truncated mid-sentence. That is invisible in the
+# console and only shows up in the rendered figure, which is exactly how a
+# clipped caption reaches publication. Route every caption through this.
+# width = 70 is empirical, not arbitrary: at the 12pt caption size enforced
+# here, a ~6.5in panel fits roughly 72 characters; 62 leaves a safe margin
+# once a legend takes horizontal space. 95 and 70 both still clipped.
+cap <- function(..., width = 62) {
+  txt <- paste0(...)
+  # Respect any explicit breaks the caller already put in, then wrap each part.
+  parts <- unlist(strsplit(txt, "\n", fixed = TRUE))
+  paste(vapply(parts, function(p)
+    paste(strwrap(p, width = width), collapse = "\n"), character(1)),
+    collapse = "\n")
+}

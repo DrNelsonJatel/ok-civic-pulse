@@ -130,9 +130,61 @@ scattertext_local <- function(con, out_dir = PY_LOCAL_DIR, min_chars = 60L) {
   invisible(res)
 }
 
+# ---- Python network analysis ------------------------------------------------
+#
+# graph-tool's stochastic block model is the one network tool with no real R
+# equivalent. Louvain (igraph) optimises modularity, which has a known
+# RESOLUTION LIMIT: below a size threshold it cannot see small communities at
+# all, and it always returns *some* partition even for a random graph. An SBM
+# is a generative model with principled model selection — it can conclude that
+# the best description of the data is "no block structure", which modularity
+# never can.
+#
+# Weekly only, and gracefully skipped: graph-tool is a heavy dependency and the
+# daily pipeline must never depend on it.
+sbm_communities <- function(con, out_dir = PY_PUBLIC_DIR, min_nodes = 40L) {
+  st <- py_ready(c("graph_tool"))
+  if (!isTRUE(st$ok)) { message("graph-tool SBM: skipped — ", st$reason); return(invisible(st)) }
+  el <- dbGetQuery(con, "
+    SELECT from_user_id AS f, to_user_id AS t FROM edges_reply
+     WHERE from_user_id IS NOT NULL AND to_user_id IS NOT NULL
+       AND from_user_id <> to_user_id")
+  if (nrow(el) < 50) { message("graph-tool SBM: skipped — too few edges"); return(invisible(NULL)) }
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  res <- tryCatch({
+    gt <- reticulate::import("graph_tool.all")
+    g  <- gt$Graph(directed = TRUE)
+    ids <- unique(c(el$f, el$t))
+    idx <- setNames(seq_along(ids) - 1L, as.character(ids))
+    g$add_vertex(length(ids))
+    for (i in seq_len(nrow(el)))
+      g$add_edge(g$vertex(idx[[as.character(el$f[i])]]),
+                 g$vertex(idx[[as.character(el$t[i])]]))
+    if (g$num_vertices() < min_nodes)
+      return(list(ok = FALSE, reason = sprintf("only %d nodes", g$num_vertices())))
+    # Nested SBM with minimum-description-length model selection.
+    state <- gt$minimize_nested_blockmodel_dl(g)
+    lvls  <- state$get_levels()
+    nb    <- vapply(seq_along(lvls), function(i) as.integer(lvls[[i]]$get_nonempty_B()), integer(1))
+    ent   <- state$entropy()
+    utils::write.csv(data.frame(level = seq_along(nb) - 1L, blocks = nb),
+                     file.path(out_dir, "sbm_levels.csv"), row.names = FALSE)
+    list(ok = TRUE, blocks = nb, description_length = ent, n = g$num_vertices())
+  }, error = function(e) list(ok = FALSE, reason = conditionMessage(e)))
+
+  if (isTRUE(res$ok))
+    message(sprintf("graph-tool SBM: %d nodes, blocks per level %s, MDL %.1f",
+                    res$n, paste(res$blocks, collapse = "/"), res$description_length))
+  else message("graph-tool SBM: ", res$reason)
+  invisible(res)
+}
+
 # One-time environment setup, documented rather than run automatically:
 #   reticulate::virtualenv_create("okcp")
 #   reticulate::virtualenv_install("okcp", c("bertopic", "scattertext", "spacy", "plotly"))
+#   # graph-tool is NOT pip-installable; use conda/homebrew:
+#   #   brew install graph-tool     (then point reticulate at that Python)
 #   reticulate::use_virtualenv("okcp")
 #   system("python -m spacy download en_core_web_sm")
 # BERTopic pulls torch (~2 GB), which is precisely why this stays weekly and

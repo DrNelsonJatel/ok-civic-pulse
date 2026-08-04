@@ -64,12 +64,20 @@ out$bursts <- step("burst detection", {
   b <- all_bursts(con, min_events = 20L)
   saveRDS(b, "output/weekly/bursts.rds"); message("   ", nrow(b), " burst intervals"); b })
 
-out$ergm <- step("ERGM (weekly, gated)", {
+out$ergm <- step("ERGM (weekly, gated ladder)", {
   g <- reply_graph(con)
   fit <- fit_ergm(g)
   saveRDS(fit, "output/weekly/ergm.rds")
-  message("   ", if (isTRUE(fit$ok)) "converged" else paste("suppressed —", fit$reason))
+  message("   ", if (isTRUE(fit$ok))
+    paste0("converged on '", fit$spec, "' (tried: ", paste(fit$tried, collapse=" -> "), ")")
+    else paste("suppressed —", fit$reason))
   fit })
+
+out$timeline <- step("longitudinal network", {
+  tl <- network_timeline(con); saveRDS(tl, "output/weekly/net_timeline.rds")
+  to <- actor_turnover(con);   saveRDS(to, "output/weekly/actor_turnover.rds")
+  message("   ", nrow(tl), " timeline rows, ", nrow(to), " turnover rows")
+  tl })
 
 step("Python visuals (optional)", { bertopic_over_time(con); scattertext_local(con) })
 

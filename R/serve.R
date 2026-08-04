@@ -60,6 +60,32 @@ export_serve_db <- function(con, path = SERVE_PATH) {
     scrape_log = put("scrape_log", "SELECT * FROM scrape_log")
   )
 
+  # Weekly analyses are far too slow to recompute at render time (the ERGM
+  # takes minutes). The weekly job writes them to output/weekly/; ship the
+  # results into the serve copy so the dashboard just reads a table.
+  wk <- function(name, file, build) {
+    f <- file.path("output/weekly", file)
+    if (!file.exists(f)) return(0L)
+    df <- tryCatch(build(readRDS(f)), error = function(e) NULL)
+    if (is.null(df) || !nrow(df)) return(0L)
+    out2 <- dbConnect(duckdb::duckdb(), dbdir = path)
+    on.exit(dbDisconnect(out2, shutdown = TRUE), add = TRUE)
+    dbWriteTable(out2, name, as.data.frame(df), overwrite = TRUE)
+    nrow(df)
+  }
+  n$ergm <- wk("ergm_fit", "ergm.rds", function(x) {
+    if (!isTRUE(x$ok)) return(data.frame(term = NA_character_, estimate = NA_real_,
+                                         std_error = NA_real_, p_value = NA_real_,
+                                         spec = "suppressed", reason = x$reason,
+                                         n = NA_integer_, m = NA_integer_))
+    cf <- x$coefs
+    data.frame(term = rownames(cf), estimate = cf[[1]], std_error = cf[[2]],
+               p_value = cf[[ncol(cf)]], spec = x$spec, reason = NA_character_,
+               n = x$n, m = x$m)
+  })
+  n$timeline <- wk("net_timeline", "net_timeline.rds", function(x) x)
+  n$turnover <- wk("actor_turnover", "actor_turnover.rds", function(x) x)
+
   dbDisconnect(out, shutdown = TRUE)
   on.exit()
   if (file.exists(path)) unlink(path)
