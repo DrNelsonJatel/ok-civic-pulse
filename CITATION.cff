@@ -29,11 +29,12 @@ keywords:
   - content analysis
   - social network analysis
   - municipal election
-# MIT covers the code and the codebook only. See LICENSE: it explicitly does
-# not, and cannot, grant rights in the source material the pipeline reads
-# (Castanet comments, City of Kelowna records) - none of which is in this
-# repository.
-license: MIT
+# CC-BY-4.0 covers the code and the codebook only. See NOTICE.md for what it
+# cannot cover: the source material the pipeline reads (Castanet comments,
+# City of Kelowna records), none of which is in this repository. The scope note
+# is a separate file because appending to LICENSE breaks GitHub's licence
+# detection.
+license: CC-BY-4.0
 version: 0.1.0-pilot
 date-released: "2026-08-04"
 references:
