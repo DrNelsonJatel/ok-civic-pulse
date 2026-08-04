@@ -17,6 +17,12 @@ format:
     nav-buttons: []
     expandable: false
 
+# GitHub Pages runs Jekyll on the published folder unless .nojekyll exists,
+# and Jekyll drops anything beginning with an underscore. Quarto clears the
+# output dir on render, so this must be recreated each time.
+post-render:
+  - bash -c "touch ../docs/.nojekyll"
+
 execute:
   echo: false
   warning: false
