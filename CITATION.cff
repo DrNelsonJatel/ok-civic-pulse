@@ -1,0 +1,51 @@
+cff-version: 1.2.0
+title: "Okanagan Civic Pulse"
+message: >-
+  If you use this software or its codebook, please cite it. Note the
+  limitations recorded below before citing any finding derived from it.
+type: software
+authors:
+  - family-names: Jatel
+    given-names: Nelson
+    # Add your ORCID here before the release - Zenodo uses it to link the
+    # record to your author profile, and it cannot be added retroactively to
+    # an already-minted DOI without a new version.
+repository-code: "https://github.com/DrNelsonJatel/ok-civic-pulse"
+abstract: >-
+  A pipeline and codebook for separating locally-actionable civic discourse
+  from provincial and federal grievance in Okanagan (British Columbia) public
+  comment, ahead of the 2026 BC general local election. Comments from Castanet
+  phpBB forums and agenda items and public-hearing testimony from City of
+  Kelowna council records are coded against a codebook of BC local-government
+  competencies derived from the Community Charter and Local Government Act.
+  The central variable is scope: which order of government has authority over
+  the issue raised, with a distinct category for offices that are not municipal
+  but appear on the same ballot (school trustees, regional district electoral
+  area directors).
+keywords:
+  - civic discourse
+  - local government
+  - British Columbia
+  - content analysis
+  - social network analysis
+  - municipal election
+# `license:` is deliberately absent: an invalid SPDX identifier breaks CFF
+# parsing, and no licence has been chosen yet. Add one (with a LICENSE file)
+# before releasing - a Zenodo archive with no licence is technically
+# all-rights-reserved, which defeats the point of depositing it.
+version: 0.1.0-pilot
+date-released: "2026-08-04"
+references:
+  - type: generic
+    title: "Limitations of the v0.1 pilot release"
+    notes: >-
+      PILOT DATA. 794 comments and agenda items over an uneven window,
+      dominated by summer months when council agendas are thin. The
+      classifier is claude-opus-5; its agreement against a human standard is
+      being measured and is NOT yet reported in this release. Do not cite the
+      resident-versus-council attention gap as an established finding: it rests
+      on eight meetings, and matters reaching council through staff reports
+      rather than numbered agenda items are not captured. Forum commenters are
+      not a representative sample of residents, so this measures discourse and
+      not public opinion. No comment text, handles, or speaker names are
+      included in this archive.
