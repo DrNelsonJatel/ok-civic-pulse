@@ -4,7 +4,43 @@
 # a recall filter, not a finding: `governance_process` alone fires on any
 # comment containing "council" or "election", so including sieve rows would
 # massively overstate local-scope volume.
+#
+# CODER PRECEDENCE. A corpus can carry codes from several coders at once — a
+# model upgrade mid-run leaves some posts on the old model, and adjudicated
+# posts carry a human code alongside the model's. Averaging across coders
+# silently blends classifiers of different quality and makes a figure that
+# corresponds to no actual measurement. So exactly ONE code set is used per
+# post, by this precedence:
+#
+#   human:*  >  claude:claude-opus-5  >  claude:claude-sonnet-5  >  everything else
+#
+# This is what made the Haiku->Opus 5 transition safe: partially re-coded
+# corpora report on the best available coder per post rather than a mixture.
 suppressMessages({library(dplyr); library(DBI)})
+
+CODER_PRECEDENCE <- c("human:", "claude:claude-opus-5", "claude:claude-sonnet-5",
+                      "claude:claude-haiku-4-5")
+
+# SQL fragment selecting the winning coder for each post.
+preferred_codes_sql <- function(alias = "i") {
+  ranks <- paste(vapply(seq_along(CODER_PRECEDENCE), function(k)
+    sprintf("WHEN coder_id LIKE '%s%%' THEN %d", CODER_PRECEDENCE[k], k),
+    character(1)), collapse = " ")
+  sprintf("
+    SELECT * FROM (
+      SELECT *, dense_rank() OVER (
+                  PARTITION BY post_id
+                  ORDER BY CASE %s ELSE 99 END) AS coder_rank
+        FROM post_issues WHERE coder_id <> 'keyword-sieve')
+     WHERE coder_rank = 1", ranks)
+}
+
+# Which coder actually supplied each post's codes, for provenance reporting.
+coder_mix <- function(con) {
+  dbGetQuery(con, sprintf("
+    SELECT coder_id, count(DISTINCT post_id) AS posts
+      FROM (%s) GROUP BY 1 ORDER BY 2 DESC", preferred_codes_sql()))
+}
 
 # Herfindahl index over posts-per-actor. This is the metric that separates a
 # genuine groundswell from three people posting forty times each: 1/n_actors
@@ -16,14 +52,13 @@ hhi <- function(counts) {
 }
 
 rebuild_issue_daily <- function(con) {
-  coded <- dbGetQuery(con, "
+  coded <- dbGetQuery(con, sprintf("
     SELECT i.post_id, i.issue_code, i.scope, i.jurisdiction, i.stance,
            i.salience, i.confidence,
            p.author_user_id, p.thread_t, CAST(p.posted_at AS DATE) AS day
-      FROM post_issues i
+      FROM (%s) i
       JOIN posts p ON p.post_id = i.post_id
-     WHERE i.coder_id <> 'keyword-sieve'
-       AND p.posted_at IS NOT NULL")
+     WHERE p.posted_at IS NOT NULL", preferred_codes_sql()))
   if (!nrow(coded)) { message("metrics: no model/human codes yet"); return(invisible(0L)) }
 
   # Reply edges attributed to an issue via the replying post's own codes.

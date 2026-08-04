@@ -1,19 +1,26 @@
-# audit.R — stratified audit of the cheap bulk tier.
+# audit.R — measuring the classifier against a human standard.
 #
-# Bulk coding runs on claude-haiku-4-5 because a free pilot has to be free.
-# That is only defensible if its accuracy is MEASURED, so a stratified sample
-# is re-coded by claude-opus-5 and the two are compared.
+# HISTORY, because it changed the design twice:
 #
-# The strata matter as much as the sample size. Auditing only the posts the
-# gate let through would measure precision and silently ignore recall — the
-# posts the gate SKIPPED are exactly where a false negative hides. So the
-# sample deliberately draws from all three populations:
+# v1 (2026-08-03): bulk = claude-haiku-4-5, audit = claude-opus-5. The strata
+# deliberately included posts the scope gate had SKIPPED, so recall could be
+# measured rather than assumed. That decision paid for itself immediately —
+# the audit found Haiku at kappa 0.39 on the is-local judgement, systematically
+# under-calling "local" (14 misses vs 1 false positive, n=60), and found the
+# gate discarding 20-27% of genuinely locally-actionable comments.
 #
-#   gated_in             — model-coded. Measures bulk-vs-audit agreement.
-#   skipped_out_of_scope — sieve found only federal/provincial codes.
-#                          Measures the cost of the 27% gate cut.
-#   skipped_no_code      — sieve found nothing at all.
-#                          Measures the sieve's own miss rate.
+# v2 (2026-08-04): bulk promoted to claude-opus-5 and the gate opened to "all".
+# A model cannot audit itself, so the audit tier is now HUMAN adjudication —
+# which is the right standard anyway: a reviewer will want agreement against a
+# domain expert, not against a second model.
+#
+# Because the gate no longer skips anything, the skipped strata are gone; the
+# sample is now drawn at random, stratified by the model's own confidence so
+# the uncertain tail is over-represented where disagreement actually lives.
+#
+# Set MODEL_AUDIT to a DIFFERENT model than MODEL_BULK if you want a
+# model-vs-model check as well; audit_report() refuses to compare a model to
+# itself.
 suppressMessages({library(dplyr); library(DBI)})
 
 # Draw a sample. Deterministic given `seed` so a reported accuracy figure can
@@ -112,11 +119,22 @@ post_label <- function(con, coder) {
       FROM post_issues WHERE coder_id = '%s' GROUP BY post_id", coder))
 }
 
-audit_report <- function(con, bulk = MODEL_BULK, audit = MODEL_AUDIT) {
+HUMAN_CODER <- Sys.getenv("OKCP_HUMAN_CODER", "human:nelson")
+
+audit_report <- function(con, bulk = MODEL_BULK, audit = HUMAN_CODER) {
+  # Comparing a model against itself yields kappa 1.0 and means nothing.
+  if (identical(coder_id_for(bulk), audit) || identical(bulk, audit)) {
+    message("audit: bulk and audit coder are the same (", bulk,
+            ") — a model cannot audit itself. Use human adjudication ",
+            "(app/adjudicate.R) or set MODEL_AUDIT to a different model.")
+    return(invisible(NULL))
+  }
   s <- dbGetQuery(con, "SELECT post_id, stratum FROM audit_sample")
   if (!nrow(s)) { message("audit: no sample drawn"); return(invisible(NULL)) }
-  a <- post_label(con, coder_id_for(audit))
-  if (!nrow(a)) { message("audit: sample not yet coded by ", audit); return(invisible(NULL)) }
+  # `audit` may be a bare coder_id (human:nelson) or a model name.
+  a_coder <- if (grepl(":", audit)) audit else coder_id_for(audit)
+  a <- post_label(con, a_coder)
+  if (!nrow(a)) { message("audit: sample not yet coded by ", a_coder); return(invisible(NULL)) }
   b <- post_label(con, coder_id_for(bulk))
 
   joined <- s |> left_join(a, by = "post_id", suffix = c("", ".a")) |>
@@ -142,7 +160,7 @@ audit_report <- function(con, bulk = MODEL_BULK, audit = MODEL_AUDIT) {
     summarise(n = n(), false_negatives = sum(a_is_local == 1),
               fn_rate = mean(a_is_local == 1), .groups = "drop")
 
-  cat("\n=== AUDIT:", audit, "vs", bulk, "===\n")
+  cat("\n=== AUDIT:", a_coder, "vs", coder_id_for(bulk), "===\n")
   if (is.null(agree)) cat("no overlapping coded posts in the gated_in stratum yet\n")
   else cat(sprintf(
     "gated_in n=%d | is-local agreement %.1f%% (kappa %.2f) | top-code agreement %.1f%% | scope kappa %.2f\n",

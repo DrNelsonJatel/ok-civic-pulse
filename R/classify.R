@@ -26,7 +26,13 @@
 # biggest cost lever on a corpus this size (cache reads bill at ~0.1x).
 suppressMessages({library(httr2); library(jsonlite); library(dplyr); library(DBI)})
 
-MODEL_BULK  <- Sys.getenv("OKCP_MODEL_BULK",  "claude-haiku-4-5")
+# Promoted from claude-haiku-4-5 on 2026-08-04 after the first audit.
+# Haiku scored kappa 0.39 against Opus 5 on the is-local judgement and
+# systematically UNDER-called "local" (14 misses vs 1 false positive on n=60).
+# That is the single judgement the product rests on, and $15/month was not
+# worth a fair-agreement classifier. Opus 5 codes ~100 posts for $0.40 with
+# caching active (its 512-token cache minimum works where Haiku's 4096 did not).
+MODEL_BULK  <- Sys.getenv("OKCP_MODEL_BULK",  "claude-opus-5")
 MODEL_AUDIT <- Sys.getenv("OKCP_MODEL_AUDIT", "claude-opus-5")
 AUDIT_EFFORT <- Sys.getenv("OKCP_AUDIT_EFFORT", "medium")
 CLASSIFY_BATCH <- as.integer(Sys.getenv("OKCP_CLASSIFY_BATCH", "10"))
@@ -49,13 +55,29 @@ anthropic_key <- function() {
   k
 }
 
+# httr2's default error message is just "HTTP 400 Bad Request", which hides the
+# API's actual explanation. That cost real time once: a CREDIT EXHAUSTION
+# ("Your credit balance is too low") is returned as a 400 and looked identical
+# to a malformed request, so a run kept firing 44 more doomed batches instead
+# of stopping. Surface the message, and make it recognisable.
 anthropic_req <- function(path) {
   request(paste0("https://api.anthropic.com", path)) |>
     req_headers(`x-api-key` = anthropic_key(),
                 `anthropic-version` = "2023-06-01",
                 `content-type` = "application/json") |>
+    req_error(body = function(resp) {
+      msg <- tryCatch(resp_body_json(resp)$error$message, error = function(e) NULL)
+      if (is.null(msg)) NULL else msg
+    }) |>
     req_retry(max_tries = 4, backoff = \(i) 2^i) |>
     req_timeout(300)
+}
+
+# Conditions that make every subsequent call pointless. Retrying through these
+# just burns wall-clock and rate limit.
+.is_fatal_api_error <- function(msg) {
+  grepl("credit balance|billing|insufficient.*quota|has been disabled",
+        msg, ignore.case = TRUE)
 }
 
 # ---- prompt + schema --------------------------------------------------------
@@ -213,6 +235,22 @@ results_to_rows <- function(results, coder) {
 # strata so the miss rate is measured rather than hoped for.
 GATE_LOCAL_SCOPES <- c("local", "ballot", "shared")
 
+# GATE MODE — default "all" since 2026-08-04.
+#
+# The first audit measured what the scope gate was actually costing, by drawing
+# audit samples from the SKIPPED strata. The answer killed the gate:
+#
+#   skipped_no_code       26.7% were genuinely locally actionable
+#   skipped_out_of_scope  20.0% were genuinely locally actionable
+#
+# The gate saved 28% of model calls and silently discarded a fifth to a quarter
+# of the target material. At Opus 5 prices a full corpus re-code is a few
+# dollars, so the trade is indefensible: code everything, and keep the sieve for
+# prioritisation and analysis rather than as a filter.
+#
+# Set OKCP_GATE=scoped to restore the old behaviour (documented, not advised).
+GATE_MODE <- Sys.getenv("OKCP_GATE", "all")
+
 gate_predicate <- function() {
   weak   <- paste(sprintf("'%s'", WEAK_GATE_CODES), collapse = ",")
   scopes <- paste(sprintf("'%s'", GATE_LOCAL_SCOPES), collapse = ",")
@@ -222,15 +260,18 @@ gate_predicate <- function() {
 }
 
 gate_sql <- function(target_coder) {
+  filt <- if (identical(GATE_MODE, "scoped"))
+    sprintf("AND p.post_id IN (SELECT post_id FROM post_issues
+                                WHERE coder_id = '%s' GROUP BY post_id HAVING %s)",
+            SIEVE_CODER, gate_predicate()) else ""
   sprintf("
     SELECT DISTINCT p.post_id, p.body_local, t.title
       FROM posts p
       LEFT JOIN threads t ON t.t_id = p.thread_t
      WHERE p.body_local IS NOT NULL AND length(p.body_local) > 20
-       AND p.post_id IN (SELECT post_id FROM post_issues
-                          WHERE coder_id = '%s' GROUP BY post_id HAVING %s)
+       %s
        AND p.post_id NOT IN (SELECT post_id FROM post_issues WHERE coder_id = '%s')
-     ORDER BY p.post_id", SIEVE_CODER, gate_predicate(), target_coder)
+     ORDER BY p.post_id", filt, target_coder)
 }
 
 gate_counts <- function(con) {
@@ -264,7 +305,14 @@ classify_sync <- function(con, model = MODEL_BULK, limit = Inf,
         req_body_json(build_body(b, model, effort), auto_unbox = TRUE) |>
         req_perform() |> resp_body_json()
       list(rows = results_to_rows(parse_classify_response(out), coder), u = out$usage)
-    }, error = function(e) { message("  batch ", k, " ERR: ", conditionMessage(e)); NULL })
+    }, error = function(e) {
+      m <- conditionMessage(e)
+      message("  batch ", k, " ERR: ", m)
+      if (.is_fatal_api_error(m))
+        stop("ABORTING: the API rejected this and every later call will fail too.\n  ",
+             m, "\n  ", n_ok, " posts were coded before this point; re-run to resume.",
+             call. = FALSE)
+      NULL })
     if (is.null(res)) next
     if (nrow(res$rows)) {
       db_upsert(con, "post_issues", as.data.frame(res$rows),
