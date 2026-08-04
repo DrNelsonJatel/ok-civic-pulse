@@ -190,3 +190,14 @@ Re-run the backfill as many times as you like — `crawl_cursor` and
 Environment: `OKCP_DB`, `OKCP_UA`, `OKCP_DELAY`, `OKCP_CUTOFF`, `OKCP_PAGES`,
 `OKCP_THREADS`, `OKCP_THREAD_PAGES`, `OKCP_OVERLAP`, `OKCP_MODEL`,
 `OKCP_EFFORT`, `ANTHROPIC_API_KEY`.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). It covers **the code and the codebook**.
+
+It does not, and cannot, grant rights in the material the pipeline reads.
+Castanet comments belong to their authors and Castanet, whose Terms of Use
+prohibit redistribution; City of Kelowna council records are public records
+under the City's own terms and name identifiable residents who spoke at public
+hearings. None of that material is in this repository. Anyone running the
+pipeline is responsible for their own compliance with each source's terms.

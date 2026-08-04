@@ -29,10 +29,11 @@ keywords:
   - content analysis
   - social network analysis
   - municipal election
-# `license:` is deliberately absent: an invalid SPDX identifier breaks CFF
-# parsing, and no licence has been chosen yet. Add one (with a LICENSE file)
-# before releasing - a Zenodo archive with no licence is technically
-# all-rights-reserved, which defeats the point of depositing it.
+# MIT covers the code and the codebook only. See LICENSE: it explicitly does
+# not, and cannot, grant rights in the source material the pipeline reads
+# (Castanet comments, City of Kelowna records) - none of which is in this
+# repository.
+license: MIT
 version: 0.1.0-pilot
 date-released: "2026-08-04"
 references:
