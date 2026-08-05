@@ -27,13 +27,28 @@ suppressMessages({library(httr2); library(jsonlite); library(rvest);
 
 ESCRIBE_BASE  <- Sys.getenv("OKCP_ESCRIBE_BASE", "https://kelownapublishing.escribemeetings.com")
 ESCRIBE_SOURCE <- "kelowna_escribe"
-ESCRIBE_DELAY <- as.numeric(Sys.getenv("OKCP_ESCRIBE_DELAY", "2.0"))
+# 2.0s was too aggressive for a sustained backfill: eScribe returned HTTP 429
+# after roughly one quarter's worth of requests and 13 chunks were lost. This
+# host tolerates a steady trickle far better than a burst.
+ESCRIBE_DELAY <- as.numeric(Sys.getenv("OKCP_ESCRIBE_DELAY", "4.0"))
 
 escribe_req <- function(path) {
   Sys.sleep(ESCRIBE_DELAY)
   request(paste0(ESCRIBE_BASE, path)) |>
     req_user_agent(UA) |>
-    req_retry(max_tries = 3, backoff = \(i) 2^i) |>
+    # 429 is transient, not fatal — back off hard and honour Retry-After when
+    # the server sends it. Three tries against a sustained limit just fails.
+    req_retry(max_tries = 6,
+              is_transient = function(resp) resp_status(resp) %in% c(429, 500, 502, 503, 504),
+              after = function(resp) {
+                # resp_header() returns NULL when the header is absent, and
+                # as.numeric(NULL) is numeric(0) — which makes `if (!is.na(ra))`
+                # throw "argument is of length zero" and turns a retryable 429
+                # into a hard error. Guard on length, not just NA.
+                ra <- suppressWarnings(as.numeric(resp_header(resp, "retry-after")))
+                if (length(ra) == 1L && !is.na(ra)) min(ra, 120) else NA
+              },
+              backoff = \(i) min(120, 5 * 2^i)) |>
     req_timeout(60)
 }
 

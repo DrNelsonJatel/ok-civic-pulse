@@ -45,7 +45,20 @@ suppressMessages({library(pdftools); library(stringr); library(dplyr);
   str_detect(x, regex("^\\s*(city of kelowna|minutes|regular meeting|public hearing)\\s*$", ignore_case = TRUE))
 }
 
-.is_bullet <- function(x) str_detect(x, "^\\s*[-•–]\\s*")
+# Bullet glyphs, INCLUDING the Private Use Area block U+F000-U+F0FF.
+#
+# Kelowna's minutes are not consistent about this and the difference is
+# invisible: some meetings bullet with an ASCII "-" (U+002D), others with
+# U+F02D. The latter is Word writing a Symbol-font bullet, which maps ASCII
+# punctuation into the PUA at 0xF000 + codepoint. pdftools passes it through
+# and a terminal renders it as nothing, so the line merely looks indented.
+#
+# The cost of missing it was total, not partial: statements attached to no
+# speaker, n_statements stayed 0, and the `filter(n_statements > 0)` at the end
+# of parse_minutes_speakers() then dropped every correctly-identified speaker.
+# The 2025-11-18 public hearing parsed as zero speakers while holding eight.
+BULLET_RX <- "^\\s*[-•–\\*\u{F000}-\u{F0FF}]\\s*"
+.is_bullet <- function(x) str_detect(x, BULLET_RX)
 
 # A speaker line: not a bullet, reasonably short, and looks like a name —
 # either "Name, Address" or "Name on behalf of X". Deliberately conservative;
@@ -59,30 +72,63 @@ suppressMessages({library(pdftools); library(stringr); library(dplyr);
     !str_detect(x, regex("^(staff|council|mayor|councillor|city clerk|gallery)\\b", ignore_case = TRUE))
 }
 
+# Kelowna's clerks write both "opposed to THIS application" and "opposed to
+# THE application" — the original patterns only matched the former, so three of
+# seven explicit stances in the sample scored NA. Determiner and the optional
+# verb "s" are both optional now. These are a HINT only: the model-assigned
+# stance in post_issues remains the analytic field.
 STANCE_PAT <- c(
-  oppose  = "opposed to this application|in opposition|against this application|does not support",
-  support = "in favour|in support|supports this application|supportive of")
+  oppose  = paste0("opposed to (this|the) application|in opposition|",
+                   "against (this|the) application|do(es)? not support"),
+  support = paste0("in (favour|support)\\b|supports? (this|the) application|",
+                   "supportive of"))
+
+# Leading-whitespace width of a raw (un-squished) line.
+.indent <- function(x) nchar(str_extract(x, "^[ \t]*"))
 
 parse_minutes_speakers <- function(txt) {
   lines <- unlist(str_split(txt, "\n"))
   lines <- lines[!.is_furniture(lines)]
   out <- list(); cur <- NULL; in_gallery <- FALSE; item <- NA_character_
+  gal_indent <- 0L
 
   for (ln in lines) {
     s <- str_squish(ln)
+    # Indentation has to be read off the RAW line: str_squish() strips it, and
+    # it is the only thing distinguishing a speaker from a wrapped statement.
+    ind <- .indent(ln)
     # Track the agenda item we are under, e.g. "5.1  START TIME 4:00 PM - ..."
     if (str_detect(s, "^\\d+(\\.\\d+)+\\s+\\S")) item <- str_trunc(s, 160)
 
-    if (str_detect(s, regex("^gallery:?$", ignore_case = TRUE))) { in_gallery <- TRUE; next }
-    # A Gallery block ends when Council/Staff resume or the item terminates.
-    if (in_gallery && str_detect(s, regex("^(staff|council|mayor|councillor|moved by|carried|termination)\\b",
+    if (str_detect(s, regex("^gallery:?$", ignore_case = TRUE))) {
+      in_gallery <- TRUE; gal_indent <- ind; next }
+    # A Gallery block ends when Council/Staff/the applicant resume, or the item
+    # terminates.
+    #
+    # "Applicant in Response" MUST be here. Without it the applicant's bullets
+    # fall through to the `.is_bullet` branch and are appended to whichever
+    # resident spoke last — putting the developer's own words in a neighbour's
+    # mouth, with their real name attached. A misattribution is worse than a
+    # miss, so this list errs toward closing the block.
+    if (in_gallery && str_detect(s, regex(paste0("^(staff|council|mayor|councillor|city clerk|",
+                                                 "moved by|carried|termination|applicant|",
+                                                 "petitioner|proponent|developer|consultant|",
+                                                 "there were no further comments)\\b"),
                                           ignore_case = TRUE))) {
       if (!is.null(cur)) { out[[length(out) + 1]] <- cur; cur <- NULL }
       in_gallery <- FALSE; next
     }
     if (!in_gallery) next
 
-    if (.is_speaker(s)) {
+    # A speaker sits at the same indent as the "Gallery:" header; a wrapped
+    # continuation of a statement is indented past it. Without this test,
+    # "...within the Heritage Conservation Area, causing it to resemble other
+    # neighbourhoods" — the second line of somebody else's bullet — satisfies
+    # every other speaker rule (capitalised words, a comma) and is recorded as
+    # a person named "Heritage Conservation Area", truncating the real
+    # speaker's testimony at that point. Measured relative to the header rather
+    # than against 0 so an indented Gallery block still parses.
+    if (ind <= gal_indent + 1L && .is_speaker(s)) {
       if (!is.null(cur)) out[[length(out) + 1]] <- cur
       nm  <- str_squish(str_split(s, ",")[[1]][1])
       nm  <- str_squish(str_replace(nm, regex("on behalf of.*", ignore_case = TRUE), ""))
@@ -90,7 +136,7 @@ parse_minutes_speakers <- function(txt) {
       cur <- list(agenda_item = item, speaker = nm,
                   affiliation = str_replace(aff, "^,\\s*", ""), statements = character())
     } else if (.is_bullet(s) && !is.null(cur)) {
-      cur$statements <- c(cur$statements, str_squish(str_remove(s, "^\\s*[-•–]\\s*")))
+      cur$statements <- c(cur$statements, str_squish(str_remove(s, BULLET_RX)))
     }
   }
   if (!is.null(cur)) out[[length(out) + 1]] <- cur
@@ -116,13 +162,22 @@ count_silent_items <- function(txt) {
                                     ignore_case = TRUE))[[1]])
 }
 
+# PDF fetches MUST go through escribe_req(), not download.file().
+#
+# download.file() has no retry and no backoff: a single 429 makes it write a
+# zero-length file and raise, which ingest_escribe_minutes() catches and logs
+# as "ERR doc NNNN" before moving on. The meeting is then silently absent from
+# the testimony corpus with no way to tell it apart from a meeting that simply
+# had no speakers. Every minutes PDF lost in the first backfill was lost this
+# way. escribe_req() carries the same 429 handling as the JSON and HTML calls.
 fetch_minutes_text <- function(doc_id) {
   f <- tempfile(fileext = ".pdf")
   on.exit(unlink(f), add = TRUE)
-  Sys.sleep(ESCRIBE_DELAY)
-  utils::download.file(sprintf("%s/FileStream.ashx?DocumentId=%s", ESCRIBE_BASE, doc_id),
-                       f, quiet = TRUE, mode = "wb",
-                       headers = c(`User-Agent` = UA))
+  resp <- escribe_req(sprintf("/FileStream.ashx?DocumentId=%s", doc_id)) |>
+    req_perform()
+  writeBin(resp_body_raw(resp), f)
+  if (file.size(f) < 1000)
+    stop("minutes PDF for doc ", doc_id, " is ", file.size(f), " bytes — not a PDF")
   paste(pdftools::pdf_text(f), collapse = "\n")
 }
 

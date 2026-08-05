@@ -16,6 +16,12 @@ db/
 # which INCLUDE body_local. Least obvious text leak in the repo.
 output/batch_*.rds
 
+# Local run state: the id of the last submitted Message Batch. Regenerable,
+# machine-specific, and leaving it unignored makes `output/` show up as
+# untracked, which invites an `git add output/` that would sweep in the
+# batch_*.rds text above.
+output/last_batch_id.txt
+
 output/cache/
 output/weekly/
 output/py_local/

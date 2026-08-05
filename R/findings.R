@@ -31,45 +31,95 @@ generate_findings <- function(post_issues, posts_meta, issue_daily, sentiment,
   lab <- function(code) issue_label(code)
   iss <- filter(post_issues, issue_code != "none")
 
-  # 1. How much of the discourse a council can actually act on.
-  by_post <- iss |> group_by(post_id) |>
+  # SOMEONE SPOKE vs AN INSTITUTION FILED.
+  #
+  # Every statement below about "residents" must be computed on posts that a
+  # PERSON authored, never on the pooled corpus. Council agenda items are
+  # in-scope by construction and written in procedural prose; once the eScribe
+  # backfill made them 75% of all rows, pooling silently turned two findings
+  # into artifacts — "94% of comments are locally actionable" (true of agendas
+  # by definition) and an emotion gap that REVERSED sign because the
+  # locally-actionable side had become mostly council minutes.
+  #
+  # actor_key is the right discriminator, not source_id: a resident who
+  # testifies at a public hearing is a voice even though the row arrives via
+  # eScribe, and source_id would file them under "council".
+  voiced_ids <- if ("actor_key" %in% names(posts_meta))
+    posts_meta$post_id[!is.na(posts_meta$actor_key)] else posts_meta$post_id
+  agenda_ids <- if (all(c("actor_key", "source_id") %in% names(posts_meta)))
+    posts_meta$post_id[is.na(posts_meta$actor_key) &
+                       posts_meta$source_id == "kelowna_escribe"] else character()
+  voiced <- filter(iss, post_id %in% voiced_ids)
+
+  # 1. How much of RESIDENT discourse a council can actually act on.
+  by_post <- voiced |> group_by(post_id) |>
     summarise(loc = any(scope %in% LOCAL_SCOPES_F), .groups = "drop")
-  pct <- 100 * mean(by_post$loc)
-  out[[length(out)+1]] <- .f(
-    sprintf("%.0f%% of comments raising an issue raise one a council can act on", pct),
-    sprintf("%d of %d issue-bearing comments carry at least one local, ballot or shared code.",
-            sum(by_post$loc), nrow(by_post)),
-    "Use this as the denominator when judging whether a spike is worth a council's attention. The remainder is real public feeling, but no local lever exists for it.",
-    "strong", "A direct count, not a model estimate.")
+  if (nrow(by_post)) {
+    pct <- 100 * mean(by_post$loc)
+    out[[length(out)+1]] <- .f(
+      sprintf("%.0f%% of resident comments raising an issue raise one a council can act on", pct),
+      sprintf("%d of %d issue-bearing comments by an identifiable person carry at least one local, ballot or shared code. Council agenda items are excluded — they are in-scope by definition and would inflate this to near 100%%.",
+              sum(by_post$loc), nrow(by_post)),
+      "Use this as the denominator when judging whether a spike is worth a council's attention. The remainder is real public feeling, but no local lever exists for it.",
+      "strong", "A direct count over resident-authored posts, not a model estimate.")
+  }
 
   # 2. The attention gap — the project's signature result.
-  if (nrow(posts_meta) && "source_id" %in% names(posts_meta)) {
-    j <- iss |> inner_join(select(posts_meta, post_id, source_id), by = "post_id") |>
-      filter(scope %in% LOCAL_SCOPES_F) |>
-      count(issue_code, source_id, name = "n") |>
-      tidyr::pivot_wider(names_from = source_id, values_from = n, values_fill = 0)
-    if (all(c("castanet_forums", "kelowna_escribe") %in% names(j))) {
-      j <- j |> mutate(resid = castanet_forums, council = kelowna_escribe,
-                       gap = resid - council) |> arrange(desc(gap))
-      top <- head(j, 3)
-      inv <- j |> arrange(gap) |> head(1)
-      out[[length(out)+1]] <- .f(
-        sprintf("Residents and council are focused on different things: %s dominates comment volume but barely appears on agendas",
-                lab(top$issue_code[1])),
-        sprintf("%s: %d resident comments vs %d agenda items. Also %s (%d vs %d) and %s (%d vs %d). Conversely %s is %d agenda items against only %d comments.",
-                lab(top$issue_code[1]), top$resid[1], top$council[1],
-                lab(top$issue_code[2]), top$resid[2], top$council[2],
-                lab(top$issue_code[3]), top$resid[3], top$council[3],
-                lab(inv$issue_code[1]), inv$council[1], inv$resid[1]),
-        "For a council: these are the issues you are being judged on but not visibly working on. For a candidate: the gap is the campaign opening.",
-        "provisional",
-        "Rests on a small number of meetings in a season when agendas are thin, and matters reaching council via staff reports rather than numbered agenda items are not captured.")
+  #
+  # MUST be computed on SHARES within a COMMON WINDOW, never on raw counts.
+  # The two corpora are wildly different sizes (2,644 agenda items against 683
+  # forum comments) and cover different spans (eScribe begins Jan 2025;
+  # Castanet reaches back to 2022). On raw counts council "out-talks" residents
+  # on nearly every issue purely because there are four times as many agenda
+  # rows — which would read as a finding about attention when it is only a
+  # finding about corpus size. Share-of-own-corpus is scale-free, and clipping
+  # both sides to the overlap removes the span artifact.
+  if (nrow(posts_meta) && all(c("source_id", "posted_at") %in% names(posts_meta))) {
+    pm <- posts_meta |> mutate(day = as.Date(posted_at),
+                               side = case_when(post_id %in% agenda_ids ~ "council",
+                                                post_id %in% voiced_ids ~ "resident",
+                                                TRUE ~ NA_character_))
+    span <- pm |> filter(!is.na(side)) |>
+      group_by(side) |> summarise(lo = min(day), hi = max(day), .groups = "drop")
+    if (nrow(span) == 2) {
+      lo <- max(span$lo); hi <- min(span$hi)          # the overlap, not the union
+      j <- iss |>
+        inner_join(select(pm, post_id, side, day), by = "post_id") |>
+        filter(!is.na(side), scope %in% LOCAL_SCOPES_F, day >= lo, day <= hi) |>
+        count(issue_code, side, name = "n") |>
+        tidyr::pivot_wider(names_from = side, values_from = n, values_fill = 0)
+      if (all(c("resident", "council") %in% names(j)) && nrow(j) >= 3) {
+        j <- j |>
+          mutate(resid = resident, council = council,
+                 r_sh = 100 * resid / sum(resid), c_sh = 100 * council / sum(council),
+                 gap = r_sh - c_sh) |>
+          arrange(desc(gap))
+        top <- head(j, 3); inv <- j |> arrange(gap) |> head(1)
+        out[[length(out)+1]] <- .f(
+          sprintf("Residents and council are focused on different things: %s takes %.0f%% of resident attention but %.0f%% of the agenda",
+                  lab(top$issue_code[1]), top$r_sh[1], top$c_sh[1]),
+          sprintf("Share of locally-actionable mentions within each corpus, %s to %s. %s: %.1f%% of resident comments (n=%d) vs %.1f%% of agenda items (n=%d). Also %s (%.1f%% vs %.1f%%) and %s (%.1f%% vs %.1f%%). Conversely %s is %.1f%% of the agenda against %.1f%% of comments.",
+                  format(lo, "%d %b %Y"), format(hi, "%d %b %Y"),
+                  lab(top$issue_code[1]), top$r_sh[1], top$resid[1], top$c_sh[1], top$council[1],
+                  lab(top$issue_code[2]), top$r_sh[2], top$c_sh[2],
+                  lab(top$issue_code[3]), top$r_sh[3], top$c_sh[3],
+                  lab(inv$issue_code[1]), inv$c_sh[1], inv$r_sh[1]),
+          "For a council: these are the issues you are being judged on but not visibly working on. For a candidate: the gap is the campaign opening.",
+          "provisional",
+          "Shares, not counts, and clipped to the window both sources cover — the corpora differ ~4x in size, so raw counts would measure collection effort rather than attention. Matters reaching council via staff reports rather than numbered agenda items are still not captured.")
+      }
     }
   }
 
   # 3. Emotion by scope — survives length normalisation.
+  #
+  # RESIDENT POSTS ONLY. Agenda items carry no emotion in any meaningful sense
+  # and score high on trust vocabulary ("approve", "support", "committee"); on
+  # the pooled corpus they made the locally-actionable band look calm and
+  # trusting purely because it was mostly minutes, flipping the sign of this
+  # comparison against the earlier, correct result.
   if (nrow(sentiment)) {
-    e <- iss |> inner_join(sentiment, by = "post_id") |>
+    e <- voiced |> inner_join(sentiment, by = "post_id") |>
       mutate(band = ifelse(scope %in% LOCAL_SCOPES_F, "local", "other"),
              across(c(anger, fear, trust), ~ 100 * .x / pmax(n_words, 1))) |>
       group_by(band) |>
@@ -77,24 +127,42 @@ generate_findings <- function(post_issues, posts_meta, issue_daily, sentiment,
                 w = mean(n_words, na.rm = TRUE), .groups = "drop")
     if (nrow(e) == 2) {
       lo <- filter(e, band == "local"); ot <- filter(e, band == "other")
+      # Both the trust claim and the length claim have to be earned from the
+      # numbers on this run, not asserted. On the pilot corpus trust differed
+      # sharply between bands; after the corpus was corrected to resident-only
+      # posts it came out dead level (2.80 vs 2.80), at which point the stock
+      # sentence "the trust gap suggests it is worth doing" was simply false.
+      # A finding generator that hardcodes its own conclusion will keep
+      # printing it long after the data stops supporting it.
+      trust_d <- ot$trust - lo$trust
+      len_d   <- 100 * (lo$w - ot$w) / max(lo$w, 1)
       out[[length(out)+1]] <- .f(
         "The angriest and most fearful discourse is about things a council cannot fix",
-        sprintf("Per 100 words: anger %.2f vs %.2f, fear %.2f vs %.2f, trust %.2f vs %.2f (out-of-scope vs locally actionable). Out-of-scope comments are also SHORTER (%.0f vs %.0f words), so this is not a length artifact.",
-                ot$anger, lo$anger, ot$fear, lo$fear, ot$trust, lo$trust, ot$w, lo$w),
-        "Expect hostility at the podium about provincial and federal matters. Naming the jurisdiction explicitly, early, is the only available response — and the trust gap suggests it is worth doing.",
+        sprintf("Per 100 words: anger %.2f vs %.2f, fear %.2f vs %.2f, trust %.2f vs %.2f (out-of-scope vs locally actionable). %s",
+                ot$anger, lo$anger, ot$fear, lo$fear, ot$trust, lo$trust,
+                if (len_d >= 10)
+                  sprintf("Out-of-scope comments are also SHORTER (%.0f vs %.0f words), so this is not a length artifact.", ot$w, lo$w)
+                else
+                  sprintf("Comment length is near-identical across the two bands (%.0f vs %.0f words), so length cannot explain the difference either way.", ot$w, lo$w)),
+        paste0("Expect hostility at the podium about provincial and federal matters. Naming the jurisdiction explicitly, early, is the only available response",
+               if (abs(trust_d) >= 0.25)
+                 sprintf(" — and the trust gap (%.2f vs %.2f) suggests it is worth doing.", ot$trust, lo$trust)
+               else ". Trust vocabulary is level across the two bands, so there is no trust gap to appeal to here."),
         "strong",
-        "Holds after normalising by comment length, which reversed the equivalent stance-level comparison.")
+        "Resident-authored posts only, normalised per 100 words. Pooling council agendas into the locally-actionable band reversed the sign of this comparison, and raw NRC counts reversed it again.")
     }
   }
 
   # 4/5. Volume leader and momentum, with the concentration guard.
-  vol <- iss |> filter(scope %in% LOCAL_SCOPES_F) |> count(issue_code, sort = TRUE)
-  if (nrow(vol)) out[[length(out)+1]] <- .f(
-    sprintf("%s is the largest locally-actionable issue", lab(vol$issue_code[1])),
-    sprintf("%d mentions; next are %s (%d) and %s (%d).",
+  # Resident voice again — otherwise this just reports the busiest agenda
+  # category, which is a fact about council's workload, not about the public.
+  vol <- voiced |> filter(scope %in% LOCAL_SCOPES_F) |> count(issue_code, sort = TRUE)
+  if (nrow(vol) >= 3) out[[length(out)+1]] <- .f(
+    sprintf("%s is the largest locally-actionable issue for residents", lab(vol$issue_code[1])),
+    sprintf("%d mentions by identifiable people; next are %s (%d) and %s (%d).",
             vol$n[1], lab(vol$issue_code[2]), vol$n[2], lab(vol$issue_code[3]), vol$n[3]),
     "Treat as the standing agenda item for public communication.",
-    "strong", "Simple volume count over model-coded comments.")
+    "strong", "Simple volume count over model-coded, resident-authored posts.")
 
   # 6. Concentration — the manufactured-groundswell check.
   conc <- iss |> inner_join(select(posts_meta, post_id, actor_key), by = "post_id") |>
@@ -130,15 +198,17 @@ generate_findings <- function(post_issues, posts_meta, issue_daily, sentiment,
       "strong", "Direct count per active day, which rewards in-scope output rather than raw volume.")
   }
 
-  # 8. Jurisdiction focus.
-  jur <- iss |> filter(scope %in% LOCAL_SCOPES_F, !is.na(jurisdiction),
-                       jurisdiction != "unspecified") |>
+  # 8. Jurisdiction focus. Resident voice only: Kelowna's own agenda naming
+  # Kelowna is not evidence about where public attention sits.
+  jur <- voiced |> filter(scope %in% LOCAL_SCOPES_F, !is.na(jurisdiction),
+                          jurisdiction != "unspecified") |>
     count(jurisdiction, sort = TRUE)
   if (nrow(jur)) out[[length(out)+1]] <- .f(
-    sprintf("Actionable discourse is concentrated in %s", jur$jurisdiction[1]),
+    sprintf("Actionable resident discourse is concentrated in %s", jur$jurisdiction[1]),
     sprintf("%d mentions vs %d for the next community. %d of %d actionable comments name no community at all.",
             jur$n[1], if (nrow(jur) > 1) jur$n[2] else 0L,
-            sum(iss$scope %in% LOCAL_SCOPES_F) - sum(jur$n), sum(iss$scope %in% LOCAL_SCOPES_F)),
+            sum(voiced$scope %in% LOCAL_SCOPES_F) - sum(jur$n),
+            sum(voiced$scope %in% LOCAL_SCOPES_F)),
     "Geographic targeting is possible but incomplete: most comments never name a community, so jurisdiction counts are a lower bound.",
     "provisional", "Jurisdiction is only assigned when a place name appears; absence is not evidence of absence.")
 
@@ -164,12 +234,17 @@ generate_findings <- function(post_issues, posts_meta, issue_daily, sentiment,
   }
 
   # 10. The honest caveat — always last, never omitted.
-  n_posts <- nrow(posts_meta)
+  # Report the two corpora separately. A single pooled "3,327 items" reads as
+  # far more resident evidence than actually exists: three quarters of it is
+  # council agendas.
+  n_posts <- sprintf("%s resident posts and %s council agenda items",
+                     format(length(voiced_ids), big.mark = ","),
+                     format(length(agenda_ids), big.mark = ","))
   span <- if (nrow(posts_meta)) range(as.Date(posts_meta$posted_at), na.rm = TRUE) else NULL
   out[[length(out)+1]] <- .f(
     "This is a pilot: read every number above as provisional",
-    sprintf("%s items over %s. Classifier agreement against a human standard has not yet been measured. Forum commenters are not a representative sample of residents.",
-            format(n_posts, big.mark = ","),
+    sprintf("%s over %s. Classifier agreement against a human standard has not yet been measured. Forum commenters are not a representative sample of residents.",
+            n_posts,
             if (!is.null(span)) paste(format(span, "%d %b %Y"), collapse = " to ") else "an uneven window"),
     "Do not cite any single figure here as established. The measures worth acting on are the large, direction-consistent ones — the scope split and the emotion gap — not small differences between issues.",
     "weak", "Stated deliberately: a dashboard that never reports its own limits invites over-reading.")

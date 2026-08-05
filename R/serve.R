@@ -63,14 +63,20 @@ export_serve_db <- function(con, path = SERVE_PATH) {
   # Weekly analyses are far too slow to recompute at render time (the ERGM
   # takes minutes). The weekly job writes them to output/weekly/; ship the
   # results into the serve copy so the dashboard just reads a table.
+  #
+  # These MUST be written through `out`, the connection to the temp file.
+  # Writing them to `path` — the previous serve copy — put them in the file
+  # that the unlink()/rename() below then deletes, so ergm_fit, net_timeline
+  # and actor_turnover never reached the shipped database. The failure was
+  # silent and worse than a crash: wk() returns the row count of what it wrote,
+  # so the run logged "ergm=2, timeline=9, turnover=4" every week while the
+  # dashboard's ERGM and longitudinal panels rendered "No ERGM fit yet".
   wk <- function(name, file, build) {
     f <- file.path("output/weekly", file)
     if (!file.exists(f)) return(0L)
     df <- tryCatch(build(readRDS(f)), error = function(e) NULL)
     if (is.null(df) || !nrow(df)) return(0L)
-    out2 <- dbConnect(duckdb::duckdb(), dbdir = path)
-    on.exit(dbDisconnect(out2, shutdown = TRUE), add = TRUE)
-    dbWriteTable(out2, name, as.data.frame(df), overwrite = TRUE)
+    dbWriteTable(out, name, as.data.frame(df), overwrite = TRUE)
     nrow(df)
   }
   n$ergm <- wk("ergm_fit", "ergm.rds", function(x) {
@@ -90,6 +96,25 @@ export_serve_db <- function(con, path = SERVE_PATH) {
   on.exit()
   if (file.exists(path)) unlink(path)
   file.rename(tmp, path)
+
+  # Read the shipped file back and confirm every table we counted actually
+  # arrived. The counts in `n` are what we INTENDED to write; only this check
+  # proves what the dashboard will find. Cheap, and it is exactly the assertion
+  # whose absence let the weekly tables vanish unnoticed.
+  chk <- dbConnect(duckdb::duckdb(), dbdir = path, read_only = TRUE)
+  have <- dbListTables(chk)
+  dbDisconnect(chk, shutdown = TRUE)
+  want <- names(n)[unlist(n) > 0]
+  want <- ifelse(want == "ergm", "ergm_fit",
+          ifelse(want == "timeline", "net_timeline",
+          ifelse(want == "turnover", "actor_turnover", want)))
+  missing <- setdiff(want, have)
+  if (length(missing))
+    stop("serve db is missing table(s) that were reported as written: ",
+         paste(missing, collapse = ", "),
+         "\n  The export counted rows it never shipped — do not trust the dashboard.",
+         call. = FALSE)
+
   message(sprintf("serve db written: %s (%s)", path,
                   paste(sprintf("%s=%d", names(n), unlist(n)), collapse = ", ")))
   invisible(path)
