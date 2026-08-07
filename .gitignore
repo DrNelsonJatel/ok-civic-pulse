@@ -23,6 +23,7 @@ output/batch_*.rds
 output/last_batch_id.txt
 
 output/cache/
+output/logs/
 output/weekly/
 output/py_local/
 output/reports/

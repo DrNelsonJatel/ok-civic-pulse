@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd job for the Okanagan Civic Pulse daily collection.
+
+  Install (LOCAL ONLY — this is a personal research machine job):
+    cp inst/dev/ca.limnology.okcp.daily.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/ca.limnology.okcp.daily.plist 2>/dev/null
+    launchctl load  ~/Library/LaunchAgents/ca.limnology.okcp.daily.plist
+    launchctl list | grep okcp            # confirm it is registered
+    launchctl start ca.limnology.okcp.daily   # run once now, to prove it works
+
+  WHY 06:20 AND NOT MIDNIGHT: Castanet timestamps are UTC and the daily job
+  looks back OKCP_LOOKBACK_DAYS; running early morning local time means a full
+  local day has closed before the crawl, so no day is ever half-collected.
+
+  StartCalendarInterval (not StartInterval) so a sleeping laptop runs the job
+  once on wake rather than replaying every interval it missed.
+
+  The API key is NOT in this file. 02_daily.R reads it from ~/.Renviron, which
+  is git-ignored; putting a credential in a plist would put it in the repo.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ca.limnology.okcp.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>$HOME/Projects/ok-civic-pulse/inst/dev/run_daily.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>6</integer>
+        <key>Minute</key><integer>20</integer>
+    </dict>
+
+    <!-- The wrapper writes its own dated log; these capture anything that
+         escapes it (a shell failure before redirection is set up). -->
+    <key>StandardOutPath</key>
+    <string>/tmp/okcp-daily.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/okcp-daily.err</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

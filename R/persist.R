@@ -6,12 +6,24 @@ persist_thread <- function(con, parsed, t_id, forum_id, batch_id = "adhoc",
   np <- 0L; ne <- 0L
   art <- parsed$article_id
 
+  # actor_key, NOT user_id, is the primary key of `actors` — 04_migrate_sources
+  # re-keyed the table so a Castanet poster and a hearing speaker can coexist in
+  # one namespace. This function was not updated with it, and because no Castanet
+  # thread was parsed between the migration and the next crawl, the breakage sat
+  # latent: every persist_thread() call then failed with "conflict target ... not
+  # referenced by a UNIQUE/PRIMARY KEY", aborting the thread before a single post
+  # was written. Same reason posts/edges now carry source_id and actor_key here —
+  # without them a Castanet post would be written source-less and drop out of
+  # every per-source rollup.
+  ck <- function(uid) ifelse(is.na(uid), NA_character_,
+                             paste0("castanet:", format(uid, scientific = FALSE, trim = TRUE)))
   if (nrow(parsed$actors)) {
     a <- parsed$actors |>
-      transmute(user_id, handle, join_date, total_posts_at_capture, is_staff,
-                last_seen_in_corpus = Sys.time()) |>
-      filter(!is.na(user_id)) |> distinct(user_id, .keep_all = TRUE)
-    db_upsert(con, "actors", a, "user_id")
+      filter(!is.na(user_id)) |> distinct(user_id, .keep_all = TRUE) |>
+      transmute(actor_key = ck(user_id), source_id = "castanet_forums",
+                user_id, handle, join_date, total_posts_at_capture, is_staff,
+                last_seen_in_corpus = Sys.time())
+    if (nrow(a)) db_upsert(con, "actors", a, "actor_key")
   }
 
   # Posts are written BEFORE the threads row on purpose: posts_captured is read
@@ -20,7 +32,10 @@ persist_thread <- function(con, parsed, t_id, forum_id, batch_id = "adhoc",
   # resume would restart from page 0 forever.
   if (nrow(parsed$posts)) {
     p <- parsed$posts |>
-      transmute(post_id, thread_t, forum_id = as.integer(forum_id), article_id,
+      transmute(post_id, source_id = "castanet_forums",
+                actor_key = ck(author_user_id),
+                native_id = format(post_id, scientific = FALSE, trim = TRUE),
+                thread_t, forum_id = as.integer(forum_id), article_id,
                 author_user_id, posted_at, seq_in_thread, quote_count, n_chars,
                 body_local, scrape_batch = batch_id, last_seen = Sys.time()) |>
       filter(!is.na(post_id))
@@ -61,7 +76,10 @@ persist_thread <- function(con, parsed, t_id, forum_id, batch_id = "adhoc",
 
   if (nrow(parsed$edges)) {
     e <- parsed$edges |>
-      transmute(edge_id, from_user_id, to_user_id, from_post_id, to_post_id,
+      transmute(edge_id, source_id = "castanet_forums",
+                from_user_id, to_user_id,
+                from_actor_key = ck(from_user_id), to_actor_key = ck(to_user_id),
+                from_post_id, to_post_id,
                 thread_t, forum_id = as.integer(forum_id), posted_at,
                 edge_type, weight, evidence) |>
       filter(!is.na(edge_id)) |> distinct(edge_id, .keep_all = TRUE)

@@ -81,15 +81,35 @@ server <- function(input, output, session) {
   queue <- reactiveVal(NULL)
   idx   <- reactiveVal(1L)
 
+  # Queue order is not cosmetic — it decides what kappa actually measures.
+  #
+  # Ordering by post_id spends the coder's attention uniformly, but agreement is
+  # not uniformly informative. The first audit round found the model's errors
+  # concentrated in `skipped_out_of_scope` (it under-called local 14 to 1), and
+  # those are false NEGATIVES: comments the gate threw away, which no amount of
+  # checking gated_in items can detect. Lowest model confidence first within a
+  # stratum for the same reason — a 0.99-confidence agreement teaches nothing.
+  #
+  # Posts the model never coded at all sort first (conf IS NULL), since a
+  # missing code is the strongest possible disagreement signal.
+  STRATUM_RANK <- "CASE s.stratum
+                     WHEN 'skipped_out_of_scope' THEN 1
+                     WHEN 'skipped_no_code'      THEN 2
+                     ELSE 3 END"
   load_queue <- function() {
     q <- dbGetQuery(con, sprintf("
-      SELECT p.post_id, p.body_local, p.source_id, t.title
+      SELECT p.post_id, p.body_local, p.source_id, t.title, s.stratum,
+             m.conf
         FROM audit_sample s
         JOIN posts p ON p.post_id = s.post_id
         LEFT JOIN threads t ON t.t_id = p.thread_t
+        LEFT JOIN (SELECT post_id, max(confidence) AS conf
+                     FROM post_issues WHERE coder_id = '%s' GROUP BY post_id) m
+               ON m.post_id = p.post_id
        WHERE p.body_local IS NOT NULL
          AND p.post_id NOT IN (SELECT post_id FROM post_issues WHERE coder_id = '%s')
-       ORDER BY p.post_id", CODER))
+       ORDER BY %s, m.conf NULLS FIRST, p.post_id",
+      coder_id_for(MODEL_BULK), CODER, STRATUM_RANK))
     queue(q); idx(1L)
   }
   load_queue()
@@ -109,10 +129,17 @@ server <- function(input, output, session) {
   })
 
   output$progress <- renderText({
-    q <- queue()
+    q <- queue(); r <- cur()
     done <- dbGetQuery(con, sprintf(
       "SELECT count(DISTINCT post_id) n FROM post_issues WHERE coder_id='%s'", CODER))$n
-    sprintf("%d remaining · %d already adjudicated", max(0, nrow(q) - idx() + 1), done)
+    # Show the stratum: judging a "skipped" item is a different question from
+    # judging a gated-in one (did the gate wrongly DISCARD this?), and the
+    # coder needs to know which question they are answering.
+    strat <- if (!is.null(r) && !is.na(r$stratum)) sprintf(" · stratum: %s", r$stratum) else ""
+    conf  <- if (!is.null(r) && !is.na(r$conf)) sprintf(" · model conf %.2f", r$conf)
+             else if (!is.null(r)) " · model assigned no code" else ""
+    sprintf("%d remaining · %d already adjudicated%s%s",
+            max(0, nrow(q) - idx() + 1), done, strat, conf)
   })
 
   output$thread <- renderText({

@@ -33,21 +33,40 @@ for (i in seq_len(nrow(fx))) {
   if (nthreads >= BUDGET) break
   fid <- fx$forum_id[i]
   cur <- dbGetQuery(con, sprintf("SELECT * FROM crawl_cursor WHERE forum_id = %d", fid))
-  if (nrow(cur) && isTRUE(cur$complete)) { message("f=", fid, " complete, skipping"); next }
+  # `complete` means the LISTING is fully enumerated back to the cutoff. It does
+  # NOT mean the threads have been parsed: one run enumerates hundreds of topics
+  # but only parses BUDGET of them. Skipping the whole forum here stranded every
+  # remaining thread permanently — f=23 enumerated 300 topics, parsed 60, and
+  # would never have returned for the other 240. Skip only the listing walk.
+  listing_done <- nrow(cur) && isTRUE(cur$complete)
   start <- if (nrow(cur)) as.integer(cur$next_start) else 0L
 
-  message(sprintf("\n== f=%d %s :: listing from start=%d (budget %d pages)",
-                  fid, fx$name[i], start, PAGES))
-  w <- tryCatch(walk_listing(fid, cutoff = CUTOFF, start = start, max_pages = PAGES),
-                error = function(e) { message("  listing ERR: ", conditionMessage(e)); NULL })
-  if (is.null(w)) { err <- err + 1L; next }
+  if (listing_done) {
+    message(sprintf("\n== f=%d %s :: listing already complete, parsing pending threads",
+                    fid, fx$name[i]))
+    # as.POSIXct(NA), NOT bare NA: a logical NA is typed BOOLEAN, and the
+    # crawl_cursor upsert COALESCEs oldest_seen against a TIMESTAMP column,
+    # which DuckDB rejects with "Cannot mix values of type BOOLEAN and
+    # TIMESTAMP". That aborts the run at the END of the forum loop — after
+    # every thread has been fetched and persisted — so it costs a full crawl
+    # pass and loses only the cursor, making it look like no progress was made.
+    w <- list(threads = data.frame(), next_start = start,
+              oldest_seen = as.POSIXct(NA), complete = TRUE, pages = 0L)
+  } else {
+    message(sprintf("\n== f=%d %s :: listing from start=%d (budget %d pages)",
+                    fid, fx$name[i], start, PAGES))
+    w <- tryCatch(walk_listing(fid, cutoff = CUTOFF, start = start, max_pages = PAGES),
+                  error = function(e) { message("  listing ERR: ", conditionMessage(e)); NULL })
+    if (is.null(w)) { err <- err + 1L; next }
+    message(sprintf("   %d topics over %d pages; complete=%s", nrow(w$threads), w$pages, w$complete))
+  }
   nforums <- nforums + 1L
-  message(sprintf("   %d topics over %d pages; complete=%s", nrow(w$threads), w$pages, w$complete))
 
-  if (nrow(w$threads)) {
-    db_upsert(con, "threads", w$threads |>
-                transmute(t_id, forum_id = as.integer(fid), title, listing_replies,
-                          last_post_at) |> as.data.frame(), "t_id")
+  {
+    if (nrow(w$threads))
+      db_upsert(con, "threads", w$threads |>
+                  transmute(t_id, forum_id = as.integer(fid), title, listing_replies,
+                            last_post_at) |> as.data.frame(), "t_id")
 
     # Parse threads we have not fully captured. listing_replies is the site's
     # own count, so a thread that has grown since last capture comes back.
@@ -81,9 +100,14 @@ for (i in seq_len(nrow(fx))) {
     }
   }
 
+  # Coerce oldest_seen to POSIXct unconditionally. Both the is.null() branch and
+  # a walk that never saw a dated row can otherwise hand a logical NA to a
+  # TIMESTAMP column, and the COALESCE in db_upsert() then aborts the whole run
+  # after all its fetching is already done.
   db_upsert(con, "crawl_cursor", data.frame(
     forum_id = fid, next_start = as.integer(w$next_start),
-    oldest_seen = if (is.null(w$oldest_seen)) NA else w$oldest_seen,
+    oldest_seen = as.POSIXct(if (is.null(w$oldest_seen)) NA else w$oldest_seen,
+                             origin = "1970-01-01", tz = "UTC"),
     complete = w$complete, updated_at = Sys.time()), "forum_id")
 }
 
