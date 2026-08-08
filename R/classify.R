@@ -199,11 +199,23 @@ parse_classify_response <- function(out) {
   fromJSON(txt[[1]]$text, simplifyVector = FALSE)$results
 }
 
-results_to_rows <- function(results, coder) {
-  bind_rows(lapply(results, function(r) {
+# `expected` is the set of post_ids actually sent in this chunk.
+#
+# The model echoes post_id back as a string, and occasionally returns one that
+# is missing, empty, or not a number — as.numeric() then yields NA, which hits
+# the NOT NULL constraint on post_issues.post_id and aborts the whole shard
+# mid-write. Nine shards of a ten-shard run failed this way.
+#
+# Dropping the bad rows silently would be the other wrong answer: those are
+# posts that were paid for and never coded, and nothing downstream would ever
+# say so. So drop them, and SAY how many and why. Ids outside `expected` are
+# also rejected — a hallucinated id would otherwise attach labels to an
+# unrelated post, which is worse than losing them.
+results_to_rows <- function(results, coder, expected = NULL) {
+  out <- bind_rows(lapply(results, function(r) {
     if (!length(r$issues)) return(NULL)
     bind_rows(lapply(r$issues, function(x) tibble::tibble(
-      post_id      = as.numeric(r$post_id),
+      post_id      = suppressWarnings(as.numeric(r$post_id %||% NA)),
       issue_code   = x$code %||% "none",
       scope        = x$scope %||% "none",
       jurisdiction = if (is.null(x$jurisdiction)) NA_character_ else as.character(x$jurisdiction),
@@ -213,6 +225,16 @@ results_to_rows <- function(results, coder) {
       coder_id     = coder,
       coded_at     = Sys.time())))
   }))
+  if (!nrow(out)) return(out)
+
+  bad_id <- is.na(out$post_id)
+  unknown <- if (!is.null(expected)) !bad_id & !(out$post_id %in% expected) else rep(FALSE, nrow(out))
+  if (any(bad_id))
+    message(sprintf("  results_to_rows: dropped %d row(s) with an unusable post_id", sum(bad_id)))
+  if (any(unknown))
+    message(sprintf("  results_to_rows: dropped %d row(s) whose post_id was not in this chunk (%s)",
+                    sum(unknown), paste(head(unique(out$post_id[unknown]), 3), collapse = ", ")))
+  out[!bad_id & !unknown, , drop = FALSE]
 }
 
 # ---- the gate: which posts are worth a model call ---------------------------
@@ -440,7 +462,11 @@ classify_batch_fetch <- function(con, batch_id) {
     if (!identical(r$result$type, "succeeded")) {
       message("  ", r$custom_id, ": ", r$result$type); next
     }
-    rows <- tryCatch(results_to_rows(parse_classify_response(r$result$message), coder),
+    # meta$chunks is keyed by the same custom_id used at submission, so the
+    # exact post_ids sent in this request are known and can be enforced.
+    exp_ids <- tryCatch(meta$chunks[[sub("^chunk-0*", "", r$custom_id)]]$post_id,
+                        error = function(e) NULL)
+    rows <- tryCatch(results_to_rows(parse_classify_response(r$result$message), coder, exp_ids),
                      error = function(e) { message("  ", r$custom_id, " ERR: ", conditionMessage(e)); NULL })
     if (!is.null(rows) && nrow(rows)) {
       db_upsert(con, "post_issues", as.data.frame(rows), c("post_id","issue_code","coder_id"))
