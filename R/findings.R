@@ -24,7 +24,8 @@ LOCAL_SCOPES_F <- c("local", "ballot", "shared")
 }
 
 generate_findings <- function(post_issues, posts_meta, issue_daily, sentiment,
-                              src_daily = NULL, edges = NULL, max_n = 10L) {
+                              src_daily = NULL, edges = NULL, forums = NULL,
+                              max_n = 10L) {
   out <- list()
   if (!nrow(post_issues)) return(tibble::tibble())
 
@@ -52,16 +53,44 @@ generate_findings <- function(post_issues, posts_meta, issue_daily, sentiment,
   voiced <- filter(iss, post_id %in% voiced_ids)
 
   # 1. How much of RESIDENT discourse a council can actually act on.
+  #
+  # THIS PERCENTAGE IS A PROPERTY OF THE FORUM SET, NOT OF THE COMMUNITY.
+  # It moves purely by deciding what to crawl: adding the B.C. and Kamloops
+  # forums — provincial politics and another city — pushes it down without a
+  # single resident changing what they talk about. Pooling all nine forums into
+  # one headline number silently presents a collection decision as a finding,
+  # which is the same error as the raw-count attention gap. So the headline is
+  # the Okanagan-region forums, and the out-of-region ones are reported beside
+  # it as the contrast they actually are.
+  region_of <- if ("forum_id" %in% names(posts_meta) && !is.null(forums) && nrow(forums))
+    setNames(forums$region, forums$forum_id) else character()
+  pm_region <- if (length(region_of))
+    setNames(unname(region_of[as.character(posts_meta$forum_id)]), posts_meta$post_id) else NULL
+  OK_REGIONS <- c("central_ok", "south_ok", "north_ok")
+
   by_post <- voiced |> group_by(post_id) |>
     summarise(loc = any(scope %in% LOCAL_SCOPES_F), .groups = "drop")
-  if (nrow(by_post)) {
-    pct <- 100 * mean(by_post$loc)
+  if (!is.null(pm_region)) {
+    by_post$region <- unname(pm_region[as.character(by_post$post_id)])
+    # eScribe testimony has no forum_id; it is Okanagan by definition.
+    by_post$region[is.na(by_post$region)] <- "central_ok"
+    by_post$band <- ifelse(by_post$region %in% c(OK_REGIONS, "general"),
+                           "okanagan", "out_of_region")
+  } else by_post$band <- "okanagan"
+
+  ok_rows <- filter(by_post, band == "okanagan")
+  oo_rows <- filter(by_post, band == "out_of_region")
+  if (nrow(ok_rows)) {
+    pct <- 100 * mean(ok_rows$loc)
     out[[length(out)+1]] <- .f(
-      sprintf("%.0f%% of resident comments raising an issue raise one a council can act on", pct),
-      sprintf("%d of %d issue-bearing comments by an identifiable person carry at least one local, ballot or shared code. Council agenda items are excluded — they are in-scope by definition and would inflate this to near 100%%.",
-              sum(by_post$loc), nrow(by_post)),
+      sprintf("%.0f%% of Okanagan resident comments raising an issue raise one a council can act on", pct),
+      sprintf("%d of %d issue-bearing comments by an identifiable person in the Okanagan forums carry at least one local, ballot or shared code.%s Council agenda items are excluded — they are in-scope by definition and would inflate this to near 100%%.",
+              sum(ok_rows$loc), nrow(ok_rows),
+              if (nrow(oo_rows)) sprintf(" For contrast the out-of-region forums (B.C., Kamloops) run at %.0f%% over %d comments.",
+                                         100 * mean(oo_rows$loc), nrow(oo_rows)) else ""),
       "Use this as the denominator when judging whether a spike is worth a council's attention. The remainder is real public feeling, but no local lever exists for it.",
-      "strong", "A direct count over resident-authored posts, not a model estimate.")
+      "strong",
+      "A direct count over resident-authored posts. Quoted for the Okanagan forums only: this percentage is a property of which forums are collected, not of the community, so pooling in out-of-region forums would move it without anyone changing what they say.")
   }
 
   # 2. The attention gap — the project's signature result.

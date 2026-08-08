@@ -816,7 +816,7 @@ if (!nrow(edges)) {
 # Every point carries its evidence and a stated confidence, because a
 # dashboard that never reports its own limits invites over-reading.
 f <- tryCatch(generate_findings(post_issues, posts_meta, issue_daily, sentiment,
-                                src_daily, edges, max_n = 10L),
+                                src_daily, edges, forums, max_n = 10L),
               error = function(e) NULL)
 if (is.null(f) || !nrow(f)) {
   cat("_Not enough coded data to generate findings._\n")
