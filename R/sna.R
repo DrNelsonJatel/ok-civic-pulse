@@ -225,7 +225,8 @@ actor_turnover <- function(con, by = "month") {
 # size and MCMC degeneracy is common. This runs WEEKLY, and the gate is the
 # point — a model that fails to converge is reported as unavailable rather than
 # printed as though its coefficients meant something.
-fit_ergm <- function(g, node_attr = NULL, max_nodes = 800L, seed = 42L) {
+fit_ergm <- function(g, node_attr = NULL, max_nodes = 800L, seed = 42L,
+                     triad_max_nodes = 300L) {
   if (!requireNamespace("ergm", quietly = TRUE))
     return(list(ok = FALSE, reason = "ergm not installed"))
   if (gorder(g) < 30)
@@ -251,6 +252,24 @@ fit_ergm <- function(g, node_attr = NULL, max_nodes = 800L, seed = 42L) {
     simple = "edges")
   if (!is.null(node_attr) && "misinfo_scope" %in% names(node_attr))
     specs["full"] <- paste(specs["full"], "+ nodematch('misinfo_scope')")
+
+  # Skip the triadic rungs on a large graph.
+  #
+  # Ladder order is "most informative first", which is right when every rung is
+  # cheap. It is wrong here: on this quote-reply structure `full` and `triad`
+  # have NEVER converged — the 154-node fit reached `dyadic` only after both
+  # failed — and GWESP on a several-hundred-node graph costs up to 60 MCMLE
+  # iterations of minutes each before failing. On the 887-node graph that is
+  # hours of compute to arrive at the same `dyadic` answer.
+  #
+  # This is an empirical shortcut, not a theoretical one: if a future corpus
+  # ever produces a converging triadic fit on a small graph, the full ladder
+  # still runs there and the threshold can be revisited.
+  if (gorder(g) > triad_max_nodes) {
+    specs <- specs[c("dyadic", "simple")]
+    message(sprintf("   (%d nodes > %d: skipping triadic specs, which have not converged on this graph structure)",
+                    gorder(g), triad_max_nodes))
+  }
 
   fit <- NULL; used <- NA_character_; tried <- character()
   for (nm in names(specs)) {
@@ -286,3 +305,45 @@ fit_ergm <- function(g, node_attr = NULL, max_nodes = 800L, seed = 42L) {
        n = gorder(g), m = gsize(g),
        coefs = as.data.frame(s$coefficients), aic = stats::AIC(fit))
 }
+
+# Fit on the longest recent window that is small enough to estimate.
+#
+# The all-time reply graph passed 800 nodes once the Castanet backfill landed
+# (887 nodes, 25,170 edges) and fit_ergm() suppressed itself — correct, because
+# an ERGM on a graph that size is not a weekly job, but it silently removed a
+# requested analysis from the dashboard. "Too big, so nothing" is the wrong
+# answer when "the last 90 days, which is what an election-season reader cares
+# about anyway" is available.
+#
+# Windows are tried longest-first so the fit is always the most data that will
+# estimate, and the window used is recorded in `spec` so a reader is never left
+# guessing which period the coefficients describe.
+fit_ergm_windowed <- function(con, windows = c(Inf, 365, 180, 90, 60, 30),
+                              max_nodes = 800L, ...) {
+  last_reason <- "no window produced an estimable graph"
+  for (w in windows) {
+    since <- if (is.finite(w)) Sys.Date() - w else NULL
+    g <- reply_graph(con, since = since)
+    lbl <- if (is.finite(w)) sprintf("last %dd", w) else "all time"
+    if (gorder(g) > max_nodes) {
+      last_reason <- sprintf("graph too large even at the shortest window (%d nodes)", gorder(g))
+      next
+    }
+    if (gorder(g) < 30) {
+      last_reason <- sprintf("graph too small at %s (%d nodes)", lbl, gorder(g))
+      next
+    }
+    fit <- fit_ergm(g, max_nodes = max_nodes, ...)
+    if (isTRUE(fit$ok)) {
+      fit$window <- lbl
+      fit$spec <- paste0(fit$spec, " (", lbl, ")")
+      message(sprintf("   ERGM fitted on %s: %d nodes, %d ties", lbl, gorder(g), gsize(g)))
+      return(fit)
+    }
+    last_reason <- fit$reason %||% last_reason
+    message(sprintf("   %s: %s", lbl, last_reason))
+  }
+  list(ok = FALSE, reason = last_reason)
+}
+
+`%||%` <- function(a, b) if (is.null(a)) b else a

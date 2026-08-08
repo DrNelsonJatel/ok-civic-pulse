@@ -65,8 +65,10 @@ out$bursts <- step("burst detection", {
   saveRDS(b, "output/weekly/bursts.rds"); message("   ", nrow(b), " burst intervals"); b })
 
 out$ergm <- step("ERGM (weekly, gated ladder)", {
-  g <- reply_graph(con)
-  fit <- fit_ergm(g)
+  # Windowed: the all-time graph outgrew the estimable size once the backfill
+  # landed, and suppressing the whole analysis is worse than fitting the most
+  # recent period that will estimate.
+  fit <- fit_ergm_windowed(con)
   saveRDS(fit, "output/weekly/ergm.rds")
   message("   ", if (isTRUE(fit$ok))
     paste0("converged on '", fit$spec, "' (tried: ", paste(fit$tried, collapse=" -> "), ")")

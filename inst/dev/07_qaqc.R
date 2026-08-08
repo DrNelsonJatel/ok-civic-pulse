@@ -65,6 +65,30 @@ if (!is.null(con) && file.exists("docs/index.html")) {
   # "Guy.Q.Robins"), so a \\b...\\b pattern both misses real matches and
   # invents false ones - this check reported 2 phantom leaks before the fix.
   hitlist <- hd[vapply(hd, function(x) grepl(x, h, fixed = TRUE), logical(1))]
+
+  # Some handles collide with the dashboard's OWN vocabulary. Two real examples:
+  # a user called "Resident" (the word appears in findings prose: "Residents and
+  # council are focused on different things") and one called "enderby" (a
+  # codebook jurisdiction code, printed in the jurisdiction panel). Neither is a
+  # leak — the string is in the page because our template or codebook puts it
+  # there, and a handle identical to a place name identifies nobody.
+  #
+  # The allowlist is derived, not hand-maintained: any string the TEMPLATE
+  # SOURCE or the codebook already contains is explained without a leak. This
+  # narrows the check rather than weakening it — a handle that appears in the
+  # HTML and is NOT explainable by our own sources still fails. Exclusions are
+  # printed, so the narrowing is never silent.
+  tmpl <- paste(unlist(lapply(
+    c("dashboard/index.qmd", "R/findings.R", "codebook/codebook.yml"),
+    function(f) if (file.exists(f)) readLines(f, warn = FALSE) else character())),
+    collapse = "\n")
+  explained <- hitlist[vapply(hitlist, function(x)
+    grepl(x, tmpl, fixed = TRUE) ||
+    grepl(tolower(x), tolower(tmpl), fixed = TRUE), logical(1))]
+  if (length(explained))
+    cat(sprintf("  [note] %-50s %s\n", "handles explained by template/codebook vocabulary",
+                paste(head(explained, 5), collapse = ", ")))
+  hitlist <- setdiff(hitlist, explained)
   nhand <- length(hitlist)
   res(nfrag == 0, "published dashboard contains no comment text", paste(nfrag, "fragments"))
   res(nhand == 0, "published dashboard contains no handles",

@@ -25,13 +25,19 @@ if (HAVE_DATA) {
   sentiment   <- tryCatch(dbGetQuery(con, "SELECT * FROM sentiment"), error = function(e) data.frame())
   src_daily   <- tryCatch(dbGetQuery(con, "SELECT * FROM source_daily"), error = function(e) data.frame())
   sources_tbl <- tryCatch(dbGetQuery(con, "SELECT * FROM sources"), error = function(e) data.frame())
+  # forums carries `region`, which generate_findings() needs to separate the
+  # Okanagan forums from the out-of-region ones. Without it the scope-split
+  # headline silently pools all nine and reports a collection decision as a
+  # finding.
+  forums      <- tryCatch(dbGetQuery(con, "SELECT * FROM forums"), error = function(e) data.frame())
   ergm_fit    <- tryCatch(dbGetQuery(con, "SELECT * FROM ergm_fit"), error = function(e) data.frame())
   net_tl      <- tryCatch(dbGetQuery(con, "SELECT * FROM net_timeline"), error = function(e) data.frame())
   turnover    <- tryCatch(dbGetQuery(con, "SELECT * FROM actor_turnover"), error = function(e) data.frame())
   dbDisconnect(con, shutdown = TRUE)
 } else {
   issue_daily <- post_issues <- posts_meta <- edges <- nodes <- scrape_log <-
-    sentiment <- src_daily <- sources_tbl <- ergm_fit <- net_tl <- turnover <- data.frame()
+    sentiment <- src_daily <- sources_tbl <- ergm_fit <- net_tl <- turnover <-
+    forums <- data.frame()
 }
 
 LOCAL_SCOPES <- c("local", "ballot", "shared")
@@ -815,10 +821,20 @@ if (!nrow(edges)) {
 # findings are true the day they are written and quietly false afterwards.
 # Every point carries its evidence and a stated confidence, because a
 # dashboard that never reports its own limits invites over-reading.
+# The error message MUST be surfaced, not swallowed. This tryCatch previously
+# collapsed any failure into "not enough coded data", and when generate_findings()
+# gained a `forums` argument the dashboard had never loaded, the entire Action
+# tab quietly degraded to that sentence on a corpus of 35,462 coded rows. A
+# code error and an empty corpus are different problems and must not print the
+# same thing.
+ferr <- NULL
 f <- tryCatch(generate_findings(post_issues, posts_meta, issue_daily, sentiment,
                                 src_daily, edges, forums, max_n = 10L),
-              error = function(e) NULL)
-if (is.null(f) || !nrow(f)) {
+              error = function(e) { ferr <<- conditionMessage(e); NULL })
+if (!is.null(ferr)) {
+  cat("**Findings could not be generated — this is a fault, not an empty corpus.**\n\n",
+      "`generate_findings()` failed with: `", ferr, "`\n", sep = "")
+} else if (is.null(f) || !nrow(f)) {
   cat("_Not enough coded data to generate findings._\n")
 } else {
   badge <- c(strong = "1F7A8C", provisional = "B08900", weak = "C05621")
