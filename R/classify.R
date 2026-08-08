@@ -259,19 +259,28 @@ gate_predicate <- function() {
                     THEN 1 ELSE 0 END) > 0", scopes, weak)
 }
 
-gate_sql <- function(target_coder) {
+# `since` restricts to an analysis window. This is a cost AND a validity
+# control, not just a budget lever: the council corpus begins 2025-01-13, so
+# pre-window forum posts have no counterpart on the other side of the attention
+# gap and cannot enter it, the scope split, or the emotion comparison. Walking
+# megathreads from page 0 dragged in 15k posts going back to 2007; coding them
+# would have bought nothing for the published figures. They stay in the DB and
+# can be coded later if a longer baseline is ever wanted.
+gate_sql <- function(target_coder, since = NULL) {
   filt <- if (identical(GATE_MODE, "scoped"))
     sprintf("AND p.post_id IN (SELECT post_id FROM post_issues
                                 WHERE coder_id = '%s' GROUP BY post_id HAVING %s)",
             SIEVE_CODER, gate_predicate()) else ""
+  win <- if (!is.null(since))
+    sprintf("AND p.posted_at >= DATE '%s'", format(as.Date(since))) else ""
   sprintf("
     SELECT DISTINCT p.post_id, p.body_local, t.title
       FROM posts p
       LEFT JOIN threads t ON t.t_id = p.thread_t
      WHERE p.body_local IS NOT NULL AND length(p.body_local) > 20
-       %s
+       %s %s
        AND p.post_id NOT IN (SELECT post_id FROM post_issues WHERE coder_id = '%s')
-     ORDER BY p.post_id", filt, target_coder)
+     ORDER BY p.post_id", filt, win, target_coder)
 }
 
 gate_counts <- function(con) {
@@ -361,27 +370,51 @@ classify_sync <- function(con, model = MODEL_BULK, limit = Inf,
 #
 # Up to 100k requests per batch; most finish well inside an hour. Results come
 # back in ARBITRARY order, so they are keyed by custom_id, never by position.
+# SHARDED. The API accepts up to 100k requests per batch, but the limit that
+# bites first is the size of the single POST: every request carries its posts'
+# full text, so 2,269 requests is a multi-tens-of-MB upload that died with
+# "LibreSSL ... bad record mac" — a TLS-level failure, not an HTTP status, so
+# req_retry() cannot see it and the whole submission was lost. The eScribe run
+# that worked was 212 requests. Sharding to that scale keeps each upload in
+# known-good territory and makes a failure cost one shard instead of the run.
+#
+# Returns a CHARACTER VECTOR of batch ids.
 classify_batch_submit <- function(con, model = MODEL_BULK, limit = Inf,
-                                  batch_size = CLASSIFY_BATCH) {
+                                  batch_size = CLASSIFY_BATCH, since = NULL,
+                                  max_requests = 250L) {
   coder <- coder_id_for(model)
-  todo <- dbGetQuery(con, paste(gate_sql(coder),
+  todo <- dbGetQuery(con, paste(gate_sql(coder, since),
                                 if (is.finite(limit)) paste("LIMIT", as.integer(limit)) else ""))
-  if (!nrow(todo)) { message("batch: nothing to do"); return(invisible(NULL)) }
+  if (!nrow(todo)) { message("batch: nothing to do"); return(invisible(character())) }
   chunks <- split(todo, ceiling(seq_len(nrow(todo)) / batch_size))
-  reqs <- lapply(seq_along(chunks), function(k) list(
-    custom_id = sprintf("chunk-%05d", k),
-    params    = build_body(chunks[[k]], model, AUDIT_EFFORT)))
+  shards <- split(seq_along(chunks), ceiling(seq_along(chunks) / max_requests))
+  message(sprintf("batch: %s posts -> %d requests -> %d shard(s), model %s",
+                  format(nrow(todo), big.mark = ","), length(chunks), length(shards), model))
 
-  out <- anthropic_req("/v1/messages/batches") |>
-    req_body_json(list(requests = reqs), auto_unbox = TRUE) |>
-    req_perform() |> resp_body_json()
-
-  message(sprintf("batch submitted: %s (%d requests / %d posts, model %s)",
-                  out$id, length(reqs), nrow(todo), model))
-  # Persist the id->post mapping so the fetch step can run in a later session.
-  saveRDS(list(batch_id = out$id, model = model, chunks = chunks),
-          file.path("output", paste0("batch_", out$id, ".rds")))
-  invisible(out$id)
+  ids <- character(); failed <- integer()
+  for (s in seq_along(shards)) {
+    kk <- shards[[s]]
+    reqs <- lapply(kk, function(k) list(
+      custom_id = sprintf("chunk-%05d", k),
+      params    = build_body(chunks[[k]], model, AUDIT_EFFORT)))
+    out <- tryCatch(
+      anthropic_req("/v1/messages/batches") |>
+        req_body_json(list(requests = reqs), auto_unbox = TRUE) |>
+        req_perform() |> resp_body_json(),
+      error = function(e) { message("  shard ", s, " FAILED: ", conditionMessage(e)); NULL })
+    if (is.null(out)) { failed <- c(failed, s); next }
+    # One RDS per batch id, holding only that shard's chunks, so the fetch step
+    # can key results back to posts even if the shards land out of order.
+    saveRDS(list(batch_id = out$id, model = model, chunks = chunks[kk]),
+            file.path("output", paste0("batch_", out$id, ".rds")))
+    ids <- c(ids, out$id)
+    message(sprintf("  shard %d/%d submitted: %s (%d requests)",
+                    s, length(shards), out$id, length(reqs)))
+  }
+  if (length(failed))
+    message("shards that did NOT submit (re-run to retry, already-submitted posts are skipped): ",
+            paste(failed, collapse = ", "))
+  invisible(ids)
 }
 
 classify_batch_fetch <- function(con, batch_id) {
