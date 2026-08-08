@@ -20,6 +20,16 @@ skip <- function(lbl, why) {
   SKIPPED <<- SKIPPED + 1L
   cat(sprintf("  [skip] %-50s %s\n", lbl, why))
 }
+# DuckDB allows one writer and no concurrent readers across processes, so a
+# QAQC run started while the daily job or a backfill is going does not just
+# fail its DB checks — an unguarded dbConnect() aborts the whole script, taking
+# the leak checks down with it. Absent and locked both mean "cannot check now",
+# and both must degrade to a visible skip rather than a crash.
+try_connect <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  tryCatch(dbConnect(duckdb::duckdb(), path, read_only = TRUE),
+           error = function(e) NULL)
+}
 section <- function(x) cat("\n== ", x, " ==\n", sep = "")
 
 # ---------------------------------------------------------------- leaks -----
@@ -39,8 +49,8 @@ if (file.exists(serve)) {
 } else skip("serve DB disclosure check", "db/serve.duckdb absent (expected in CI)")
 
 # Published artifacts must not contain any comment fragment or handle.
-if (file.exists("db/civic_pulse.duckdb") && file.exists("docs/index.html")) {
-  con <- dbConnect(duckdb::duckdb(), "db/civic_pulse.duckdb", read_only = TRUE)
+con <- try_connect("db/civic_pulse.duckdb")
+if (!is.null(con) && file.exists("docs/index.html")) {
   s <- dbGetQuery(con, "SELECT body_local FROM posts WHERE length(body_local)>120 LIMIT 300")$body_local
   # Staff accounts are institutional, not people, and their names legitimately
   # appear in our own source-registry labels ("Castanet News Comments...").
@@ -59,6 +69,12 @@ if (file.exists("db/civic_pulse.duckdb") && file.exists("docs/index.html")) {
   res(nfrag == 0, "published dashboard contains no comment text", paste(nfrag, "fragments"))
   res(nhand == 0, "published dashboard contains no handles",
       if (nhand) paste(head(hitlist, 3), collapse = ", ") else "")
+} else {
+  # Never let this one pass by silence: it is the check that catches an
+  # irreversible disclosure. If it could not run, say so loudly.
+  if (!is.null(con)) dbDisconnect(con, shutdown = TRUE)
+  skip("published-artifact leak check",
+       "civic_pulse.duckdb absent/locked, or docs/index.html not built")
 }
 
 # .gitignore must actually be effective. A trailing "# comment" on a pattern
@@ -82,12 +98,59 @@ bad <- files[!vapply(files, function(f)
   tryCatch({ parse(f); TRUE }, error = function(e) FALSE), logical(1))]
 res(length(bad) == 0, sprintf("all %d R files parse", length(files)), paste(bad, collapse = " "))
 
+# Parsing is not enough. 02_daily.R called classify_new() for weeks and that
+# function did not exist anywhere in R/ — the scheduled job aborted at that
+# line every night, after the scrape but before the rollup, so posts piled up
+# while nothing was coded and the wrapper skipped the report. The file parsed
+# perfectly the whole time.
+#
+# So: for every entry-point script, source ONLY what it sources, then check
+# that every function it calls actually resolves. This is the cheapest possible
+# guard against a runtime NameError in an unattended job.
+resolvable <- function(script) {
+  txt  <- readLines(script, warn = FALSE)
+  code <- parse(script)
+  env  <- new.env(parent = globalenv())
+  srcs <- unlist(regmatches(txt, gregexpr('(?<=source\\(")[^"]+(?=")', txt, perl = TRUE)))
+  for (s in unique(srcs)) if (file.exists(s))
+    try(sys.source(s, envir = env), silent = TRUE)
+
+  # Functions the script DEFINES ITSELF count as resolvable. Without this the
+  # check reports every local helper as missing (add_col, ok, no ...), and a
+  # check that cries wolf is a check everyone learns to ignore — which is how
+  # the real classify_new() gap would have survived it too.
+  local_fns <- unlist(lapply(code, function(e) {
+    if (is.call(e) && length(e) >= 3 &&
+        as.character(e[[1]]) %in% c("<-", "=", "<<-") &&
+        is.call(e[[3]]) && identical(as.character(e[[3]][[1]]), "function"))
+      as.character(e[[2]]) else NULL
+  }))
+
+  called <- unique(unlist(lapply(code, function(e)
+    tryCatch(codetools::findGlobals(as.function(list(e)), merge = FALSE)$functions,
+             error = function(z) character()))))
+  called <- setdiff(called, c("", NA, local_fns))
+  called[!vapply(called, function(f)
+    exists(f, envir = env, mode = "function") ||
+    exists(f, envir = globalenv(), mode = "function"), logical(1))]
+}
+if (requireNamespace("codetools", quietly = TRUE)) {
+  entry <- list.files("inst/dev", pattern = "^[0-9].*\\.R$", full.names = TRUE)
+  missing_fns <- lapply(entry, function(f)
+    tryCatch(resolvable(f), error = function(e) character()))
+  names(missing_fns) <- basename(entry)
+  bad_fns <- missing_fns[lengths(missing_fns) > 0]
+  res(length(bad_fns) == 0, "every function called in inst/dev resolves",
+      paste(sprintf("%s: %s", names(bad_fns),
+                    vapply(bad_fns, paste, character(1), collapse = ",")), collapse = "; "))
+} else skip("entry-point function resolution", "codetools not installed")
+
 # ---------------------------------------------------------------- data ------
 section("3. DATA INTEGRITY")
-if (!file.exists("db/civic_pulse.duckdb")) {
-  skip("data integrity checks", "db/civic_pulse.duckdb absent (expected in CI)")
+con <- try_connect("db/civic_pulse.duckdb")
+if (is.null(con)) {
+  skip("data integrity checks", "civic_pulse.duckdb absent or locked by another job")
 } else {
-  con <- dbConnect(duckdb::duckdb(), "db/civic_pulse.duckdb", read_only = TRUE)
   q <- function(sql) dbGetQuery(con, sql)[[1]]
   res(q("SELECT count(*) FROM posts WHERE source_id IS NULL") == 0, "every post is source-tagged")
   res(q("SELECT count(*) FROM posts WHERE posted_at IS NULL") == 0, "every post has a timestamp")

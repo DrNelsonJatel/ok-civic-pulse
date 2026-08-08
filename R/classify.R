@@ -286,6 +286,36 @@ gate_counts <- function(con) {
     gate_predicate(), SIEVE_CODER))
 }
 
+# ---- the daily entry point --------------------------------------------------
+#
+# 02_daily.R has called classify_new() since it was written, and the function
+# did not exist. The scheduled job therefore aborted at that line every run:
+# after the scrape (which persists) but BEFORE rebuild_issue_daily() and
+# db_log(), so posts accumulated while nothing was ever coded or rolled up, and
+# the wrapper skipped the PDF on the non-zero exit. A cron that collects and
+# silently never analyses is worse than no cron.
+#
+# DAILY_MAX is not optional. classify_sync(limit = Inf) over an unclassified
+# backlog is unbounded spend from an unattended job — after a backfill that
+# backlog was 36,105 posts, roughly US$160 at synchronous rates. The cap makes
+# the worst case a known daily figure, and a truncated run is LOGGED rather
+# than silent, because a cap you cannot see is indistinguishable from
+# "everything is up to date".
+DAILY_MAX <- as.integer(Sys.getenv("OKCP_DAILY_MAX", "500"))
+
+classify_new <- function(con, model = MODEL_BULK, limit = DAILY_MAX) {
+  pending <- dbGetQuery(con, sprintf(
+    "SELECT count(*) n FROM (%s)", gate_sql(coder_id_for(model))))$n
+  if (!pending) { message("classify: nothing to do"); return(invisible(0L)) }
+  if (pending > limit)
+    message(sprintf(paste0("classify: %s posts pending, capping at %d this run ",
+                           "(%s left over; raise OKCP_DAILY_MAX or use the ",
+                           "batch path in 01/03 for a backlog)"),
+                    format(pending, big.mark = ","), limit,
+                    format(pending - limit, big.mark = ",")))
+  classify_sync(con, model = model, limit = limit)
+}
+
 # ---- synchronous path (small runs, daily incremental) -----------------------
 classify_sync <- function(con, model = MODEL_BULK, limit = Inf,
                           batch_size = CLASSIFY_BATCH, effort = AUDIT_EFFORT) {
