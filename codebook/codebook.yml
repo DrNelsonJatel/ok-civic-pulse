@@ -1,4 +1,6 @@
-label: v1 initial - migrated from R/taxonomy.R tribble
+label: v3 seed widening from the 42k-post corpus (evidence-driven, then calibrated) -
+  agriculture_alr (ostrich cull/CFIA/avian flu, absent from v1), drugs_treatment,
+  housing, economic_dev, water_sewer
 description: 'Municipal sphere-of-influence codebook for Okanagan civic discourse.
   Scope is the central judgement: which level of government owns the issue.'
 scopes:
@@ -41,7 +43,7 @@ issues:
     the province sets tenancy law and most funding.
   seeds: affordable housing|housing crisis|housing supply|missing middle|secondary
     suite|carriage house|purpose[- ]built rental|\brenoviction|rental vacancy|\blandlord\b|housing
-    affordab
+    affordab|\btenant\b|\bmortgage\b|\brental\b|\brenters?\b|\bhomeowner|housing market
 - code: short_term_rentals
   label: Short-term rentals
   scope: shared
@@ -71,7 +73,7 @@ issues:
     and advisories.
   seeds: water restriction|water conservation|stage [1-5]|\bwater utility|water rate|drinking
     water|water quality advisor|boil water|\bsewer\b|\bwastewater\b|\beffluent\b|treatment
-    plant|irrigation district|\bwatering\b
+    plant|irrigation district|\bwatering\b|water (supply|system|main|meter|infrastructure)|\baquifer\b|water bill
 - code: solid_waste
   label: Garbage, recycling & landfill
   scope: local
@@ -114,7 +116,7 @@ issues:
   definition: Downtown revitalization, business licensing, storefront vacancy, tourism
     promotion, film and event attraction, industrial land supply.
   seeds: downtown revital|business licen|storefront vacan|\btourism\b|economic development|\bDMO\b|industrial
-    land|business improvement
+    land|business improvement|\bsmall business|\bbusinesses\b|business closure|job creation|\bstorefront\b|\bmain street\b
 - code: climate_flood
   label: Flood, drought & climate resilience
   scope: local
@@ -128,7 +130,7 @@ issues:
   definition: Agricultural Land Reserve boundaries and exclusions, farm-urban interface,
     agri-tourism, orchards and vineyards as land use.
   seeds: \bALR\b|agricultural land reserve|\bfarmland\b|\borchard|\bvineyard|agri[-
-    ]tourism|farm[- ]urban
+    ]tourism|farm[- ]urban|\bfarmer|\bfarming\b|\bostrich|\bCFIA\b|avian (flu|influenza)|\b(bird|herd|flock|animal|ostrich) cull|cull(ing)? (the )?(birds|flock|herd|ostrich)|\blivestock\b|\bpoultry\b
 - code: governance_process
   label: Council conduct, process & elections
   scope: local
@@ -182,7 +184,7 @@ issues:
   definition: Decriminalization, safe supply, involuntary care, treatment and detox
     bed capacity, overdose response.
   seeds: \bdecriminaliz|safe supply|safer supply|involuntary care|treatment bed|\bdetox\b|\boverdose\b|drug
-    policy|\bsupervised consumption
+    policy|\bsupervised consumption|\baddiction\b|\baddict\b|\baddicts\b|\bfentanyl\b|mental health|\brehab\b
 - code: courts_bail
   label: Courts, bail & sentencing
   scope: provincial
