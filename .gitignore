@@ -21,6 +21,7 @@ output/batch_*.rds
 # untracked, which invites an `git add output/` that would sweep in the
 # batch_*.rds text above.
 output/last_batch_id.txt
+output/batch_ids.txt
 
 output/cache/
 output/logs/
