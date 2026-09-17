@@ -134,10 +134,42 @@ res(length(bad) == 0, sprintf("all %d R files parse", length(files)), paste(bad,
 resolvable <- function(script) {
   txt  <- readLines(script, warn = FALSE)
   code <- parse(script)
-  env  <- new.env(parent = globalenv())
   srcs <- unlist(regmatches(txt, gregexpr('(?<=source\\(")[^"]+(?=")', txt, perl = TRUE)))
-  for (s in unique(srcs)) if (file.exists(s))
-    try(sys.source(s, envir = env), silent = TRUE)
+
+  # PROJECT FUNCTIONS ARE RESOLVED BY PARSING THE SOURCED FILES, NEVER BY
+  # EVALUATING THEM. This used to sys.source() each one inside try(silent=TRUE),
+  # which turned "that package is not installed on this machine" into "your
+  # script calls a function that does not exist". In CI, where httr2, rvest and
+  # quanteda are deliberately absent, R/scrape.R and friends failed to load and
+  # the check reported parse_thread, walk_listing, classify_new and nine others
+  # as missing. It failed EVERY CI run from 2026-08-10 onward for that reason
+  # alone, so the one check written to catch a real gap (02_daily.R calling a
+  # classify_new() that did not exist) could no longer distinguish that gap from
+  # a bare runner. A permanently red gate reports nothing.
+  #
+  # A static scan needs no packages, cannot be defeated by a load failure, and
+  # behaves identically here and in CI.
+  # Counts EVERY top-level assignment to a name, not only `name <- function(...)`.
+  # A function can perfectly well be built by a call: R/reddit.R has
+  # `.reddit_token <- local({...})`, a closure over a cached token, and a
+  # literal-only scan reported it as undefined. The trade is deliberate and
+  # narrow: something like `parse_thread <- some_data_frame` would now satisfy a
+  # call to parse_thread(). That is contrived, whereas function factories are
+  # ordinary R, and the failure this check exists for -- a name that NOTHING in
+  # the project defines anywhere, as with classify_new() -- is still caught.
+  # Verified both ways before this went in: still green on the real tree, and
+  # still red for a probe script calling a function that does not exist.
+  defs_in <- function(f) {
+    code <- tryCatch(parse(f), error = function(e) NULL)
+    if (is.null(code)) return(character())
+    unlist(lapply(code, function(e)
+      if (is.call(e) && length(e) >= 3 &&
+          as.character(e[[1]]) %in% c("<-", "=", "<<-") &&
+          is.name(e[[2]]))
+        as.character(e[[2]]) else NULL))
+  }
+  srcs <- unique(srcs[file.exists(srcs)])
+  sourced_defs <- unique(unlist(lapply(srcs, defs_in)))
 
   # Functions the script DEFINES ITSELF count as resolvable. Without this the
   # check reports every local helper as missing (add_col, ok, no ...), and a
@@ -155,7 +187,7 @@ resolvable <- function(script) {
              error = function(z) character()))))
   called <- setdiff(called, c("", NA, local_fns))
   called[!vapply(called, function(f)
-    exists(f, envir = env, mode = "function") ||
+    f %in% sourced_defs ||
     exists(f, envir = globalenv(), mode = "function"), logical(1))]
 }
 if (requireNamespace("codetools", quietly = TRUE)) {
