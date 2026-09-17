@@ -46,8 +46,40 @@ issue_label <- function(code) {
   ifelse(code %in% ISSUES$code, ISSUES$label[match(code, ISSUES$code)], code)
 }
 n_or <- function(x, alt = 0) if (length(x) && !is.na(x)) x else alt
-fresh_days <- if (nrow(posts_meta))
-  as.integer(Sys.Date() - as.Date(max(posts_meta$posted_at, na.rm = TRUE))) else NA_integer_
+BUILD_AT <- Sys.time()
+
+# FRESHNESS, PER SOURCE AND PER FRONTIER. The pooled version this replaces
+# (one max() over every post) had two faults at once: the freshest source
+# masked a dead one, and it counted eScribe's SCHEDULED future meetings, which
+# is how a brief once printed a corpus '-6 days old'.
+#
+# The two frontiers are different questions and only the first was ever shown:
+#   collected = newest item the crawler stored
+#   coded     = newest item the classifier labelled, and therefore the real
+#               date every issue/scope/emotion chart here describes.
+.src_limit <- function(s) ifelse(s == 'kelowna_escribe', 21L, 3L)
+src_fresh <- if (nrow(posts_meta)) {
+  .now <- Sys.time()
+  pm <- posts_meta |> filter(!is.na(posted_at), posted_at <= .now)
+  coll <- pm |> group_by(source_id) |>
+    summarise(items = n(), newest_collected = max(posted_at), .groups = 'drop')
+  cod <- if (nrow(post_issues)) {
+    pm |> semi_join(distinct(post_issues, post_id), by = 'post_id') |>
+      group_by(source_id) |>
+      summarise(coded = n(), newest_coded = max(posted_at), .groups = 'drop')
+  } else NULL
+  out <- if (is.null(cod)) coll |> mutate(coded = NA_integer_, newest_coded = as.POSIXct(NA))
+         else coll |> left_join(cod, by = 'source_id')
+  out |> mutate(age_collected = as.integer(Sys.Date() - as.Date(newest_collected)),
+                age_coded     = as.integer(Sys.Date() - as.Date(newest_coded)),
+                limit         = .src_limit(source_id)) |>
+    arrange(source_id)
+} else data.frame()
+
+# Worst case, not best: this page is as old as its stalest source.
+fresh_days <- if (nrow(src_fresh)) max(src_fresh$age_collected, na.rm = TRUE) else NA_integer_
+coded_days <- if (nrow(src_fresh) && any(!is.na(src_fresh$age_coded)))
+  max(src_fresh$age_coded, na.rm = TRUE) else NA_integer_
 ```
 
 # Overview
@@ -243,7 +275,7 @@ if (!nrow(post_issues)) {
 }
 ```
 
-# Methods
+# Methods {scrolling="true"}
 
 ## Row
 
@@ -300,9 +332,16 @@ if (nrow(scrape_log)) {
 
 ```{r}
 #| output: asis
-cat(sprintf("<div class='provenance'>Corpus freshness: most recent comment %s.<br>%s &middot; %s</div>",
+cat(sprintf(paste0("<div class='provenance'>Freshness, reported for the STALEST source rather than ",
+                   "the freshest: newest collected item %s, newest <strong>coded</strong> item %s. ",
+                   "Every issue, scope and emotion figure here is built from coded rows, so the ",
+                   "coded date is the one the charts describe. Per-source detail on the ",
+                   "<strong>Data</strong> tab.<br>Built %s &middot; %s &middot; %s</div>"),
             if (is.na(fresh_days)) "unknown" else
               sprintf("%d day%s old", fresh_days, ifelse(fresh_days == 1, "", "s")),
+            if (is.na(coded_days)) "unknown" else
+              sprintf("%d day%s old", coded_days, ifelse(coded_days == 1, "", "s")),
+            format(BUILD_AT, "%Y-%m-%d %H:%M %Z", tz = "America/Vancouver"),
             BRAND$org, BRAND$product))
 ```
 
@@ -521,14 +560,14 @@ on rather than for sheer volume. Access postures were verified on the dates
 recorded in the registry and should be re-checked before any new crawl.
 :::
 
-# Network
+# Network {scrolling="true"}
 
-## Row {height="52%"}
+## Row {.flow}
 
 ```{r}
 #| title: "Reply network — who answers whom"
-#| fig-width: 7.5
-#| fig-height: 5
+#| fig-width: 11
+#| fig-height: 7.5
 # SNA plotting practice applied here:
 #  * layout seeded, so the figure is reproducible across renders
 #  * node SIZE encodes degree, node COLOUR encodes community — two variables,
@@ -582,10 +621,12 @@ if (!nrow(edges)) {
 }
 ```
 
+## Row {.flow}
+
 ```{r}
 #| title: "Degree distribution"
-#| fig-width: 5
-#| fig-height: 5
+#| fig-width: 11
+#| fig-height: 4.2
 if (!nrow(edges)) {
   cat("No reply edges yet.")
 } else {
@@ -606,7 +647,7 @@ if (!nrow(edges)) {
 }
 ```
 
-## Row {height="48%"}
+## Row {.flow}
 
 ```{r}
 #| title: "Structure of both networks"
@@ -695,12 +736,12 @@ from a degenerate model. At 231 ties that is the expected outcome, not a bug —
 it needs a larger corpus before the model is identifiable.
 :::
 
-## Row {height="50%"}
+## Row {.flow}
 
 ```{r}
 #| title: "Network over time — growth, cohesion and turnover"
-#| fig-width: 7.5
-#| fig-height: 4.2
+#| fig-width: 6.5
+#| fig-height: 4.4
 # LONGITUDINAL view. A single snapshot cannot tell a stable community from one
 # that reassembles from different people every month, which is exactly what
 # the retention series below shows is happening here.
@@ -727,8 +768,8 @@ if (!nrow(net_tl)) {
 
 ```{r}
 #| title: "Actor retention month to month"
-#| fig-width: 5
-#| fig-height: 4.2
+#| fig-width: 5.6
+#| fig-height: 4.4
 if (!nrow(turnover)) {
   cat("No turnover data yet.")
 } else {
@@ -747,12 +788,12 @@ if (!nrow(turnover)) {
 }
 ```
 
-## Row {height="50%"}
+## Row {.flow}
 
 ```{r}
 #| title: "ERGM — what predicts a reply tie"
-#| fig-width: 6
-#| fig-height: 3.6
+#| fig-width: 6.2
+#| fig-height: 4.2
 # Coefficient plot with 95% CIs. An ERGM table of numbers is unreadable; the
 # plot makes the one substantive result immediately legible.
 if (!nrow(ergm_fit) || all(is.na(ergm_fit$estimate))) {
@@ -777,8 +818,8 @@ if (!nrow(ergm_fit) || all(is.na(ergm_fit$estimate))) {
 
 ```{r}
 #| title: "Small-world: observed vs random"
-#| fig-width: 6
-#| fig-height: 3.6
+#| fig-width: 6.2
+#| fig-height: 4.2
 if (!nrow(edges)) {
   cat("No reply edges yet.")
 } else {
@@ -810,9 +851,9 @@ if (!nrow(edges)) {
 }
 ```
 
-# Action
+# Action {scrolling="true"}
 
-## Row {height="70%"}
+## Row {.flow}
 
 ```{r}
 #| title: "Key take-home points"
@@ -841,14 +882,14 @@ if (!is.null(ferr)) {
   for (i in seq_len(nrow(f))) {
     col <- badge[[f$confidence[i]]]
     cat(sprintf(
-"::: {style=\"border-left:4px solid #%s; padding:6px 0 6px 12px; margin-bottom:14px;\"}
-**%d. %s**  <span style=\"background:#%s;color:white;padding:1px 7px;border-radius:9px;font-size:11px;text-transform:uppercase;\">%s</span>
+"::: {style=\"border-left:5px solid #%s; padding:10px 2px 10px 16px; margin-bottom:22px; font-size:1.06rem; line-height:1.55; overflow-wrap:anywhere;\"}
+**%d. %s**  <span style=\"background:#%s;color:white;padding:2px 9px;border-radius:9px;font-size:0.85rem;letter-spacing:0.03em;text-transform:uppercase;white-space:nowrap;\">%s</span>
 
 %s
 
 *So what:* %s
 
-<span style=\"color:#6B7A82;font-size:12.5px;\">Confidence — %s</span>
+<span style=\"color:#5A6A72;font-size:0.95rem;\">Confidence — %s</span>
 :::\n\n",
       col, i, f$headline[i], col, f$confidence[i],
       f$evidence[i], f$action[i], f$why[i]))
@@ -856,7 +897,7 @@ if (!is.null(ferr)) {
 }
 ```
 
-## Row {height="30%"}
+## Row {.flow}
 
 ::: {.card title="Methods"}
 
@@ -935,7 +976,12 @@ if (!length(files)) {
     stringsAsFactors = FALSE)
   d <- d[order(d$date, decreasing = TRUE), ]
   d$Year <- format(d$date, "%Y"); d$Month <- format(d$date, "%B")
-  d$Report <- sprintf("[%s](../output/reports/%s)", d$file, d$file)
+  # Links point at the PUBLISHED copy that the site serves. They used to point
+  # at ../output/reports, which is git-ignored and exists only on the build
+  # machine: locally every link worked, and for every actual visitor every link
+  # 404'd. inst/dev/08_publish_site.R copies these same files into docs/reports
+  # immediately after the render, so this table and those files agree.
+  d$Report <- sprintf("[%s](reports/%s)", d$file, d$file)
   knitr::kable(d[, c("Year", "Month", "date", "Report", "size")],
                col.names = c("Year", "Month", "Date", "Report", "Size"),
                row.names = FALSE)
@@ -943,11 +989,119 @@ if (!length(files)) {
 ```
 
 ::: {.provenance}
-Briefs are **generated artifacts** and are not committed to the repository —
-they regenerate from `report/daily.qmd` against the current corpus. The daily
-driver refuses to render if the corpus is more than three days stale, so a
-brief dated today is never built from week-old data.
+Briefs regenerate from `report/daily.qmd` against the current corpus, and the
+most recent 60 are **published alongside this page** (`docs/reports/`) so the
+links above resolve for a visitor and not only on the build machine. The daily
+driver refuses to render a brief when any source is staler than its allowed
+number of days, so a brief dated today is never built from week-old data — and
+when it refuses, no new brief appears here, which is the signal to check the
+**Data** tab.
 
 Every brief is de-texted: aggregate counts, issue codes and network structure
 only. No comment text, no handles, no speaker names.
+:::
+
+# Data {scrolling="true"}
+
+## Row {height="240px"}
+
+```{r}
+#| title: "When each source last updated"
+#| output: asis
+# THE FRESHNESS PANEL. Per source, never pooled: a pooled maximum lets the
+# freshest source mask a dead one, and that is exactly how this project's
+# council side (eScribe) sat frozen from 2026-08-18 while the page kept
+# claiming the corpus was current.
+#
+# Two frontiers are reported, because they are genuinely different and only one
+# of them was visible before:
+#   * COLLECTED — the newest item the crawler has stored.
+#   * CODED     — the newest item the classifier has actually labelled. Every
+#                 issue, scope and emotion figure on this dashboard is built
+#                 from coded rows only, so THIS is the date the charts are
+#                 really about. When it lags the collected date, the charts are
+#                 older than the corpus and the page must say so.
+if (!nrow(src_fresh)) {
+  cat("_No source accounting available._\n")
+} else {
+  d <- src_fresh
+  d$Status <- ifelse(is.na(d$age_coded), "no coded rows",
+              ifelse(d$age_collected > d$limit, "STALE — collection behind",
+              ifelse(d$age_coded > d$limit + 7, "coding behind collection", "current")))
+  out <- data.frame(
+    Source          = d$source_id,
+    Items           = format(d$items, big.mark = ","),
+    `Last collected`= format(as.Date(d$newest_collected)),
+    `Age (d)`       = d$age_collected,
+    `Last coded`    = ifelse(is.na(d$newest_coded), "—", format(as.Date(d$newest_coded))),
+    `Coded age (d)` = ifelse(is.na(d$age_coded), NA_integer_, d$age_coded),
+    `Stale after`   = paste0(d$limit, " d"),
+    Status          = d$Status,
+    check.names     = FALSE)
+  print(knitr::kable(out, row.names = FALSE))
+  cat("\n\n")
+}
+```
+
+## Row {.flow}
+
+::: {.card title="What updates when, and how to tell if it stopped"}
+
+```{r}
+#| output: asis
+# The build stamp is asserted by inst/dev/08_publish_site.R: it refuses to
+# publish a page it cannot find this id and today's date in. A page that cannot
+# prove when it was built is indistinguishable from a page that stopped
+# updating, which is the failure this whole panel exists to make visible.
+cat(sprintf(
+  "<p style=\"font-size:1.05rem;\"><strong>This page was built</strong> <span id=\"okcp-build-stamp\">%s</span>.</p>\n",
+  format(BUILD_AT, "%Y-%m-%d %H:%M %Z", tz = "America/Vancouver")))
+if (nrow(scrape_log))
+  cat(sprintf("<p style=\"font-size:1.05rem;\">Most recent crawl run: <strong>%s</strong> (%s).</p>\n",
+              format(as.POSIXct(scrape_log$run_at[1], tz = "UTC"),
+                     "%Y-%m-%d %H:%M %Z", tz = "America/Vancouver"),
+              scrape_log$mode[1]))
+```
+
+The pipeline runs at **06:20 America/Vancouver** every day and has five steps.
+Each one publishes something the next depends on, so the table above is the
+honest place to look when a number seems old:
+
+1. **Collect** — recently-active Castanet threads and Kelowna eScribe agendas.
+2. **Code** — the classifier labels new posts, capped per run so an unattended
+   job cannot run up an unbounded bill. If the cap is lower than the daily
+   inflow, `Last coded` falls behind `Last collected` and the charts age even
+   though collection is healthy.
+3. **Roll up** — daily issue metrics.
+4. **Export** — a de-texted read copy, which is the only thing this page reads.
+5. **Publish** — render this dashboard and commit it, which is what makes the
+   public page change at all.
+
+Timestamps are stored in UTC and displayed in Pacific time
+(`America/Vancouver`).
+
+:::
+
+::: {.card title="What this page is built from"}
+
+```{r}
+if (!nrow(sources_tbl)) {
+  cat("No source registry.")
+} else {
+  knitr::kable(sources_tbl |>
+    mutate(Active = ifelse(active, "yes", "no"),
+           Reply = ifelse(has_reply_edges, "yes", "no")) |>
+    select(Source = source_id, Name = name, Platform = platform,
+           Access = access, Region = region, `Reply edges` = Reply, Active),
+    row.names = FALSE)
+}
+```
+
+::: {.provenance}
+This page reads a **de-texted** copy of the corpus: issue codes, scopes,
+sentiment scores, hashed actor ids and network structure. No comment text, no
+handles and no speaker names are present in the file the browser loads, and the
+briefs in the Library are aggregate-only for the same reason.
+:::
+
 :::

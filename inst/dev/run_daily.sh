@@ -56,12 +56,32 @@ trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
   echo "===== $(ts) daily start ====="
   Rscript inst/dev/02_daily.R; rc_daily=$?
   echo "----- daily rc=$rc_daily"
+
+  # The serve copy is what the dashboard AND the brief read, so it must be
+  # refreshed every day. It used to be exported only by 03_weekly.R, which no
+  # scheduler runs, so both downstream artifacts froze at the last hand-run
+  # while this log reported rc=0 every morning.
+  if [ $rc_daily -eq 0 ]; then
+    Rscript inst/dev/08_export_serve.R; rc_serve=$?
+    echo "----- serve export rc=$rc_serve"
+  else
+    rc_serve=1
+    echo "----- serve export SKIPPED (daily failed)"
+  fi
+
   # The report is regenerated only if collection succeeded: a PDF built from a
   # half-written corpus is worse than yesterday's PDF.
-  if [ $rc_daily -eq 0 ]; then
+  #
+  # PUBLISHING IS NOT CONDITIONAL ON THE BRIEF. The brief legitimately refuses
+  # when a source has gone quiet, and for 35 days that refusal also stopped the
+  # dashboard from being published at all: one guard silently gating an
+  # unrelated artifact. The dashboard carries its own per-source freshness, so
+  # it publishes and states its own age instead.
+  if [ $rc_serve -eq 0 ]; then
     Rscript inst/dev/06_daily_report.R; echo "----- report rc=$?"
+    Rscript inst/dev/08_publish_site.R; echo "----- publish rc=$?"
   else
-    echo "----- report SKIPPED (daily failed)"
+    echo "----- report + publish SKIPPED (no fresh serve copy)"
   fi
   echo "===== $(ts) daily end ====="
 } >>"$LOG" 2>&1

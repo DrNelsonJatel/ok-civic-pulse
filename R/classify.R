@@ -288,7 +288,7 @@ gate_predicate <- function() {
 # megathreads from page 0 dragged in 15k posts going back to 2007; coding them
 # would have bought nothing for the published figures. They stay in the DB and
 # can be coded later if a longer baseline is ever wanted.
-gate_sql <- function(target_coder, since = NULL) {
+gate_sql <- function(target_coder, since = NULL, newest_first = FALSE) {
   filt <- if (identical(GATE_MODE, "scoped"))
     sprintf("AND p.post_id IN (SELECT post_id FROM post_issues
                                 WHERE coder_id = '%s' GROUP BY post_id HAVING %s)",
@@ -302,7 +302,8 @@ gate_sql <- function(target_coder, since = NULL) {
      WHERE p.body_local IS NOT NULL AND length(p.body_local) > 20
        %s %s
        AND p.post_id NOT IN (SELECT post_id FROM post_issues WHERE coder_id = '%s')
-     ORDER BY p.post_id", filt, win, target_coder)
+     ORDER BY %s", filt, win, target_coder,
+    if (newest_first) "p.posted_at DESC NULLS LAST, p.post_id DESC" else "p.post_id")
 }
 
 gate_counts <- function(con) {
@@ -334,7 +335,16 @@ gate_counts <- function(con) {
 # "everything is up to date".
 DAILY_MAX <- as.integer(Sys.getenv("OKCP_DAILY_MAX", "500"))
 
-classify_new <- function(con, model = MODEL_BULK, limit = DAILY_MAX) {
+# NEWEST FIRST, and the choice is load-bearing. The daily queue is FIFO by
+# post_id, i.e. oldest first, which is right for a backfill and wrong for a
+# monitor: collection adds ~1,100 posts/day while the cap codes 500, so the
+# coded frontier fell BEHIND by ~600 posts/day and stuck at 2026-08-18 while
+# the crawler was current to today. Every coded figure on the dashboard aged
+# out even though the pipeline reported success every morning. Coding the
+# newest posts first keeps the published numbers about now; the older backlog
+# fills in behind it, or via the batch path.
+classify_new <- function(con, model = MODEL_BULK, limit = DAILY_MAX,
+                         newest_first = TRUE) {
   pending <- dbGetQuery(con, sprintf(
     "SELECT count(*) n FROM (%s)", gate_sql(coder_id_for(model))))$n
   if (!pending) { message("classify: nothing to do"); return(invisible(0L)) }
@@ -344,14 +354,15 @@ classify_new <- function(con, model = MODEL_BULK, limit = DAILY_MAX) {
                            "batch path in 01/03 for a backlog)"),
                     format(pending, big.mark = ","), limit,
                     format(pending - limit, big.mark = ",")))
-  classify_sync(con, model = model, limit = limit)
+  classify_sync(con, model = model, limit = limit, newest_first = newest_first)
 }
 
 # ---- synchronous path (small runs, daily incremental) -----------------------
 classify_sync <- function(con, model = MODEL_BULK, limit = Inf,
-                          batch_size = CLASSIFY_BATCH, effort = AUDIT_EFFORT) {
+                          batch_size = CLASSIFY_BATCH, effort = AUDIT_EFFORT,
+                          newest_first = FALSE) {
   coder <- coder_id_for(model)
-  todo <- dbGetQuery(con, paste(gate_sql(coder),
+  todo <- dbGetQuery(con, paste(gate_sql(coder, newest_first = newest_first),
                                 if (is.finite(limit)) paste("LIMIT", as.integer(limit)) else ""))
   if (!nrow(todo)) { message("classify: nothing to do"); return(invisible(0L)) }
   message(sprintf("classify(sync): %d posts, %d batches, model %s",

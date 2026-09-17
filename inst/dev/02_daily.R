@@ -4,7 +4,7 @@
 # reads a few pages per active thread rather than re-walking whole megathreads.
 source("R/db.R"); source("R/fetch.R"); source("R/forums.R"); source("R/scrape.R")
 source("R/persist.R"); source("R/taxonomy.R"); source("R/sieve_run.R")
-source("R/classify.R"); source("R/metrics.R")
+source("R/classify.R"); source("R/metrics.R"); source("R/escribe.R")
 suppressMessages({library(dplyr); library(DBI)})
 
 LOOKBACK <- as.integer(Sys.getenv("OKCP_LOOKBACK_DAYS", "3"))
@@ -51,6 +51,18 @@ for (i in seq_len(nrow(fx))) {
       message("  ERR t=", sprintf("%.0f", todo$t_id[j]), ": ", conditionMessage(e)) })
   }
 }
+
+# eScribe was ingested ONCE, interactively, during the backfill: ingest_escribe()
+# was defined and then called from no scheduled script, so the council side of
+# the corpus froze on 2026-08-18 while Castanet stayed current. That also blocked
+# the daily brief every morning, because the report guard refuses to publish when
+# any source is stale and eScribe was 29 days behind its 21-day limit.
+# tryCatch: eScribe going down must not cost us the Castanet crawl that just
+# succeeded, but the failure is logged loudly rather than swallowed.
+if (!identical(Sys.getenv("OKCP_SKIP_ESCRIBE"), "1")) {
+  tryCatch(ingest_escribe(con),
+           error = function(e) message("escribe INGEST FAILED: ", conditionMessage(e)))
+} else message("escribe: skipped (OKCP_SKIP_ESCRIBE=1)")
 
 sieve_new_posts(con)
 if (DO_CLASSIFY) classify_new(con) else message("classify: skipped (OKCP_SKIP_CLASSIFY=1)")

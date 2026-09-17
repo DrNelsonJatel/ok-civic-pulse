@@ -27,3 +27,20 @@ body, .card, .valuebox { font-size: 1rem; }
   padding-left: 0.75rem;
   margin-top: 0.5rem;
 }
+
+// Flow rows size to their content and the page scrolls. Belt and braces: if a
+// card still ends up shorter than what is inside it, scroll the card rather
+// than clipping the bottom off, which is what the Action tab was doing to the
+// last of its ten generated findings.
+.card-body { overflow-y: auto; }
+
+// Dashboard figures are scaled to the width of the column they land in, so a
+// canvas declared much wider than that column has its axis and legend text
+// scaled DOWN with it. The fig-width values in index.qmd are chosen to render
+// near 1:1 against their column; this only stops an image being capped below
+// that.
+.card-body img { max-width: 100%; height: auto; }
+
+// Provenance is the strip this product's credibility rests on, so it is sized
+// to be read rather than squinted at.
+.provenance { font-size: 0.92rem; }
