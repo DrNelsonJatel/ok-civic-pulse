@@ -101,6 +101,11 @@ if (!length(pdfs)) {
 # stages broadly can sweep up whatever Nelson had staged at 06:20 — including,
 # in this repo, files that are git-ignored for text-leak reasons if they were
 # ever force-added. --only commits these paths and leaves the index alone.
+# system2() pastes its arguments into ONE shell command line and does no
+# quoting, so any argument with a space in it is re-split by the shell. The
+# first version of the commit below passed a message containing a date and the
+# shell handed git "2026-09-16", "21:39" and "PDT" as pathspecs. Everything
+# passed through here is quoted; multi-word values must use shQuote().
 git <- function(...) system2("git", c(...), stdout = TRUE, stderr = TRUE)
 
 changed <- length(git("status", "--porcelain", "--", "docs")) > 0
@@ -108,12 +113,12 @@ changed <- length(git("status", "--porcelain", "--", "docs")) > 0
 # else is staged, but it can only commit paths git already knows about, and a
 # first publish brings NEW files (docs/reports, new site_libs assets). Scoping
 # the add to docs keeps the shared-index protection intact.
-if (changed) git("add", "--", "docs")
+if (changed) invisible(git("add", "--", "docs"))
 if (!changed) {
   step("docs/ is byte-identical to the last publish — nothing to commit")
 } else {
   msg <- sprintf("Publish dashboard %s", format(Sys.time(), "%Y-%m-%d %H:%M %Z"))
-  out <- git("commit", "--only", "docs", "-m", msg)
+  out <- git("commit", "--only", "docs", "-m", shQuote(msg))
   if (!is.null(attr(out, "status")) && attr(out, "status") != 0)
     stop("commit failed:\n", paste(out, collapse = "\n"), call. = FALSE)
   step(paste("committed:", msg))
