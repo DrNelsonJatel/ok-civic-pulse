@@ -45,8 +45,23 @@ if (HAVE) {
     src_daily <- sources_tbl <- data.frame()
 }
 LOCAL <- c("local", "ballot", "shared")
-fresh <- if (nrow(posts_meta))
-  as.integer(Sys.Date() - as.Date(max(posts_meta$posted_at, na.rm = TRUE))) else NA_integer_
+# Same pooled max() that the dashboard carried until 2026-09-16, and it printed
+# a NEGATIVE age on the 2026-08-12 brief ('most recent item -6 days old'):
+# eScribe stores SCHEDULED meetings, which are dated in the future, and one
+# max() over every source also lets the freshest source mask a dead one. Age is
+# the age of the STALEST source, counting only items that have actually
+# happened. inst/dev/06_daily_report.R already refuses to render on this basis;
+# the number printed in the footer now agrees with the guard that let it print.
+fresh <- if (nrow(posts_meta)) {
+  pm <- posts_meta[!is.na(posts_meta$posted_at) & posts_meta$posted_at <= Sys.time(), ]
+  # dplyr, not tapply: tapply() strips the POSIXct class and hands back bare
+  # seconds, which as.Date() then reads as DAYS since the epoch. The first
+  # version of this line returned -1787048088 and would have printed it.
+  if (!nrow(pm)) NA_integer_ else {
+    nf <- pm |> group_by(source_id) |> summarise(newest = max(posted_at), .groups = 'drop')
+    max(as.integer(Sys.Date() - as.Date(nf$newest)))
+  }
+} else NA_integer_
 ```
 
 ```{r}
@@ -144,6 +159,6 @@ if (nrow(src_daily)) {
                      format = "pipe"))
   cat("\n")
 }
-cat(sprintf("_Corpus freshness: most recent item %s. Aggregate counts only — no comment text, no handles, no speaker names. Discourse is not opinion: forum commenters are not a representative sample of residents._\n",
+cat(sprintf("_Corpus freshness: stalest source %s. Aggregate counts only — no comment text, no handles, no speaker names. Discourse is not opinion: forum commenters are not a representative sample of residents._\n",
             if (is.na(fresh)) "unknown" else sprintf("%d day%s old", fresh, ifelse(fresh == 1, "", "s"))))
 ```
