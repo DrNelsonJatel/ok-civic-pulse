@@ -39,6 +39,13 @@ if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; f
 command -v Rscript >/dev/null || export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 command -v Rscript >/dev/null || { echo "$(ts) Rscript not found" >>"$LOG"; exit 127; }
 
+# quarto is needed only by the publish step, so a missing one must NOT abort
+# collection -- but it has to be said out loud here. launchd runs with a stub
+# PATH, and "the page stopped updating" because quarto was invisible to this
+# job looks exactly like "the page stopped updating" for any other reason. The
+# page-freshness workflow catches the freeze; this line names the cause.
+command -v quarto >/dev/null || echo "$(ts) WARNING: quarto not on PATH; the dashboard will NOT be published this run" >>"$LOG"
+
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
   # Lock exists. Reclaim it only if the recorded process is genuinely gone.
   if [ -f "$LOCKDIR/pid" ] && ! kill -0 "$(cat "$LOCKDIR/pid" 2>/dev/null)" 2>/dev/null; then

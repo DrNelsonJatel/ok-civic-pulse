@@ -1054,7 +1054,13 @@ if (!nrow(src_fresh)) {
 # prove when it was built is indistinguishable from a page that stopped
 # updating, which is the failure this whole panel exists to make visible.
 cat(sprintf(
-  "<p style=\"font-size:1.05rem;\"><strong>This page was built</strong> <span id=\"okcp-build-stamp\">%s</span>.</p>\n",
+  paste0("<p style=\"font-size:1.05rem;\"><strong>This page was built</strong> ",
+         "<span id=\"okcp-build-stamp\" data-built-utc=\"%s\">%s</span>.</p>\n"),
+  # UTC in the attribute, Pacific in the text. The CI freshness check parses the
+  # attribute: an ISO-8601 Z timestamp is unambiguous on any runner, whereas
+  # "PDT" depends on the parser knowing North American zone abbreviations, and a
+  # detector that false-alarms on a date format gets switched off.
+  format(BUILD_AT, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
   format(BUILD_AT, "%Y-%m-%d %H:%M %Z", tz = "America/Vancouver")))
 if (nrow(scrape_log))
   cat(sprintf("<p style=\"font-size:1.05rem;\">Most recent crawl run: <strong>%s</strong> (%s).</p>\n",

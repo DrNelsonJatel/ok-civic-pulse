@@ -38,6 +38,7 @@ KEEP     <- as.integer(Sys.getenv("OKCP_PUBLISH_KEEP_BRIEFS", "60"))
 NO_PUSH  <- identical(Sys.getenv("OKCP_NO_PUSH"), "1")
 SERVE    <- Sys.getenv("OKCP_SERVE_DB", "db/serve.duckdb")
 STAMP_ID <- "okcp-build-stamp"   # must match dashboard/index.qmd
+STAMP_UTC <- "data-built-utc"    # the machine-readable half CI parses
 
 step <- function(msg) message(sprintf("[publish] %s", msg))
 
@@ -63,9 +64,10 @@ if (!file.exists(idx)) stop("render reported success but docs/index.html is miss
 # is the cheap check that the page we are about to publish was actually built
 # from today's data rather than recovered from a freeze/cache.
 html <- readLines(idx, warn = FALSE)
-if (!any(grepl(STAMP_ID, html, fixed = TRUE)))
-  stop("rendered page carries no build stamp (#", STAMP_ID, ") — refusing to publish ",
-       "a page whose provenance cannot be read back.", call. = FALSE)
+if (!any(grepl(STAMP_ID, html, fixed = TRUE)) || !any(grepl(STAMP_UTC, html, fixed = TRUE)))
+  stop("rendered page carries no build stamp (#", STAMP_ID, " + ", STAMP_UTC,
+       ") — refusing to publish a page whose provenance cannot be read back. ",
+       "The page-freshness workflow asserts on the same two markers.", call. = FALSE)
 today <- format(Sys.Date(), "%Y-%m-%d")
 if (!any(grepl(today, html, fixed = TRUE)))
   stop("rendered page does not mention today's date (", today, ") — the render ",

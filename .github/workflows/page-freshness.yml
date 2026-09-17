@@ -1,0 +1,126 @@
+name: page-freshness
+
+# THE DETECTOR FOR THE FAILURE THAT CAUSED THIS FILE TO EXIST.
+#
+# The published dashboard sat at its 2026-08-09 build for five weeks while the
+# 06:20 pipeline exited 0 every single morning. Nothing was broken in a way any
+# log could show: the crawl worked, the classifier worked, the rollup worked,
+# and the two steps that would have made the page change (export the serve copy,
+# render and commit docs/) simply did not exist. There was no assertion anywhere
+# that the PUBLISHED artifact had moved, so the one thing a reader sees was the
+# one thing nobody checked.
+#
+# Publishing depends on a launchd job on one laptop. Asleep, offline, keychain
+# locked, quarto missing from launchd's PATH, a rejected push: every one of those
+# freezes the page silently and looks identical from inside the repo. This job
+# runs on GitHub's clock instead, so it keeps checking when that laptop does not.
+#
+# It deliberately asserts on the STAMP IN THE PUBLISHED HTML, not on commit
+# dates. A commit proves someone pushed something; the stamp proves the page a
+# visitor loads was built from a recent render.
+on:
+  schedule:
+    # 18:00 UTC = 11:00 America/Vancouver (PDT). The daily job starts at 06:20
+    # local and took about two hours on 2026-09-16 (1,140 posts collected, 500
+    # classified), so this leaves a wide margin and still reports the same day.
+    - cron: "0 18 * * *"
+  push:
+    branches: [main]
+    paths: ["docs/**", ".github/workflows/page-freshness.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The published page must carry a build stamp
+        id: stamp
+        run: |
+          set -euo pipefail
+          test -f docs/index.html || { echo "::error::docs/index.html is missing entirely."; exit 1; }
+          # The machine-readable half: data-built-utc is ISO-8601 Z, which every
+          # date(1) parses. The visible Pacific text beside it is for readers and
+          # is deliberately NOT what this asserts on.
+          utc=$(grep -o 'data-built-utc="[^"]*"' docs/index.html | head -1 | sed 's/.*="//;s/"$//')
+          stamp=$(grep -o 'id="okcp-build-stamp"[^>]*>[^<]*' docs/index.html | head -1 | sed 's/.*>//')
+          echo "utc=$utc" >> "$GITHUB_OUTPUT"
+          if [ -z "$utc" ]; then
+            echo "::error::No machine-readable build stamp (data-built-utc) in docs/index.html."
+            echo "::error::Either the Data tab was removed, or the page was published by something"
+            echo "::error::other than inst/dev/08_publish_site.R, which asserts the stamp is there."
+            exit 1
+          fi
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          echo "published build stamp: $stamp"
+
+      - name: The page must not be stale
+        run: |
+          set -euo pipefail
+          utc='${{ steps.stamp.outputs.utc }}'
+          stamp='${{ steps.stamp.outputs.stamp }}'
+          built=$(date -u -d "$utc" +%s) || { echo "::error::Unparseable stamp: $utc"; exit 1; }
+          now=$(date +%s)
+          age_h=$(( (now - built) / 3600 ))
+          echo "page is ${age_h}h old (built $stamp / $utc)"
+
+          # A stamp from the future means a wrong clock or a hand-edited page,
+          # and it would otherwise read as permanently fresh.
+          if [ "$age_h" -lt -2 ]; then
+            echo "::error::Build stamp is ${age_h}h in the FUTURE. Check the builder's clock."
+            exit 1
+          fi
+
+          # 48h, not 24h: one missed morning is a laptop that was asleep, which
+          # is normal life. Two consecutive misses is the pipeline not running,
+          # which is the condition that went unnoticed for five weeks.
+          if [ "$age_h" -gt 48 ]; then
+            echo "::error::The published page is ${age_h}h old (limit 48h)."
+            echo "::error::The daily job has not published for two days. Check, in order:"
+            echo "::error::  1. is the laptop awake and was 06:20 missed?  output/logs/daily-*.log"
+            echo "::error::  2. did the serve export run?                  'serve export rc=' in that log"
+            echo "::error::  3. did the render or the push fail?            'publish rc=' in that log"
+            echo "::error::  4. launchctl list | grep okcp"
+            exit 1
+          fi
+
+      - name: Every brief the Library lists must actually be published
+        run: |
+          set -euo pipefail
+          # COMPLETENESS, not just freshness. The Library indexed output/reports
+          # (git-ignored, build-machine only) while linking to reports/<file>, so
+          # for five weeks every row in that table pointed at a 404 and the table
+          # looked perfectly correct to whoever built it. A link check is the only
+          # thing that can tell those two states apart.
+          missing=0
+          for href in $(grep -o 'href="reports/[^"]*"' docs/index.html | sed 's/href="//;s/"$//' | sort -u); do
+            if [ -f "docs/$href" ]; then
+              echo "  ok      $href"
+            else
+              echo "::error::Library lists a brief that is not published: $href"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing brief link(s) would 404 for every visitor."
+            exit 1
+          fi
+          echo "all published brief links resolve"
+
+      - name: The page must still carry its own provenance
+        run: |
+          set -euo pipefail
+          # Cheap structural asserts. Each one is a thing that silently vanished
+          # at some point in this project's history and was noticed late.
+          for needle in 'id="data"' 'data-built-utc' 'When each source last updated' 'Last coded'; do
+            grep -q "$needle" docs/index.html || {
+              echo "::error::docs/index.html no longer contains: $needle"
+              echo "::error::The per-source freshness panel is how a reader can tell a live"
+              echo "::error::page from a frozen one. It is not optional furniture."
+              exit 1; }
+            echo "  ok      $needle"
+          done
