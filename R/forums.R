@@ -64,7 +64,12 @@ walk_listing <- function(forum_id, cutoff, start = 0L, max_pages = 500L) {
   out <- list(); page <- 0L; seen <- integer(0); oldest <- NULL; complete <- FALSE
   repeat {
     url  <- sprintf("https://forums.castanet.net/viewforum.php?f=%d&start=%d", forum_id, start)
-    html <- tryCatch(fetch_html(url), error = function(e) NULL)
+    # A failed FIRST page, or a block on any page, is not "end of forum": it
+    # must reach the caller as an error. Only a later-page transient may end
+    # the walk quietly (the next run re-reads from the top).
+    html <- tryCatch(fetch_html(url), error = function(e) {
+      if (page == 0L || is_blocked(e)) stop(e)
+      NULL })
     if (is.null(html)) break
     rows <- html |> html_elements("li.row, .topiclist .row")
     if (!length(rows)) { complete <- TRUE; break }

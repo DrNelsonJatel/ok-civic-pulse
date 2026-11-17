@@ -20,7 +20,9 @@ parse_thread <- function(t_id, forum_id = NA_integer_, article_id = NA_real_,
   art  <- article_id
   repeat {
     url  <- if (start == 0) base else sprintf("%s&start=%d", base, start)
-    html <- tryCatch(fetch_html(url), error = function(e) NULL)
+    html <- tryCatch(fetch_html(url), error = function(e) {
+      if (is_blocked(e)) stop(e)   # a block must not read as "thread ended"
+      NULL })
     if (is.null(html)) break
     pdiv <- html |> html_elements("div.post")
     if (!length(pdiv)) break

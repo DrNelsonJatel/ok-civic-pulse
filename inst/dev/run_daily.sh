@@ -90,6 +90,11 @@ trap 'rm -rf "$LOCKDIR"' EXIT INT TERM
   else
     echo "----- report + publish SKIPPED (no fresh serve copy)"
   fi
+
+  # QAQC was a manual gate only, so an orphan-code FAIL sat unseen. Run it
+  # every day, AFTER publishing (it reports, it does not gate), so the log
+  # carries the verdict and `grep "qaqc rc=1"` finds every bad day.
+  Rscript inst/dev/07_qaqc.R; echo "----- qaqc rc=$?"
   echo "===== $(ts) daily end ====="
 } >>"$LOG" 2>&1
 

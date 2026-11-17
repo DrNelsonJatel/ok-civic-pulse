@@ -20,9 +20,13 @@ SOURCE_REGISTRY <- tibble::tribble(
   ~source_id, ~name, ~platform, ~url, ~region, ~access, ~cost_note, ~robots_note, ~has_reply_edges, ~active,
 
   "castanet_forums", "Castanet News Comments + discussion forums", "phpbb",
-  "https://forums.castanet.net", "okanagan", "open",
-  "free",
-  "verified 2026-08-03: viewtopic/viewforum allowed for generic UA; named AI bots blocked; /posting.php disallowed",
+  "https://forums.castanet.net", "okanagan", "blocked_cloudflare",
+  "free while it lasted; now needs permission or an export from Castanet",
+  paste("verified 2026-08-03: viewtopic/viewforum allowed for generic UA; named AI bots blocked;",
+        "/posting.php disallowed. verified 2026-11-17: Cloudflare managed challenge (HTTP 403)",
+        "to all automated clients since 2026-09-23; newest post 2026-09-22. Do not bypass."),
+  # Stays active: the daily run makes ONE listing request, which detects the
+  # day access returns, and stops on BLOCKED otherwise.
   TRUE, TRUE,
 
   # CORRECTION 2026-08-03: forums.castanetkamloops.net does NOT resolve. There

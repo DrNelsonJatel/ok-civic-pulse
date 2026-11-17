@@ -76,6 +76,21 @@ src_fresh <- if (nrow(posts_meta)) {
     arrange(source_id)
 } else data.frame()
 
+# "Active" in the registry is what we INTEND; whether data is arriving is
+# measured here. A source registered active but past its freshness limit
+# (Castanet, Cloudflare-blocked since 2026-09-23) must read STALE in the
+# registry tables, not "yes" beside a page that says it is 56 days old.
+registry_active <- function(tbl) {
+  age <- if (nrow(src_fresh)) select(src_fresh, source_id, age_collected, limit) else
+    data.frame(source_id = character(), age_collected = integer(), limit = integer())
+  tbl |> left_join(age, by = "source_id") |>
+    mutate(Active = dplyr::case_when(
+      !active ~ "no",
+      !is.na(age_collected) & age_collected > limit ~
+        sprintf("STALE: newest item %d d old", age_collected),
+      TRUE ~ "yes"))
+}
+
 # Worst case, not best: this page is as old as its stalest source.
 fresh_days <- if (nrow(src_fresh)) max(src_fresh$age_collected, na.rm = TRUE) else NA_integer_
 coded_days <- if (nrow(src_fresh) && any(!is.na(src_fresh$age_coded)))
@@ -542,9 +557,8 @@ if (!nrow(src_daily)) {
 if (!nrow(sources_tbl)) {
   cat("No source registry.")
 } else {
-  knitr::kable(sources_tbl |>
-    mutate(Reply = ifelse(has_reply_edges, "yes", "no"),
-           Active = ifelse(active, "yes", "no")) |>
+  knitr::kable(registry_active(sources_tbl) |>
+    mutate(Reply = ifelse(has_reply_edges, "yes", "no")) |>
     select(Source = source_id, Name = name, Platform = platform,
            Access = access, Cost = cost_note, `Reply edges` = Reply, Active))
 }
@@ -1094,9 +1108,8 @@ Timestamps are stored in UTC and displayed in Pacific time
 if (!nrow(sources_tbl)) {
   cat("No source registry.")
 } else {
-  knitr::kable(sources_tbl |>
-    mutate(Active = ifelse(active, "yes", "no"),
-           Reply = ifelse(has_reply_edges, "yes", "no")) |>
+  knitr::kable(registry_active(sources_tbl) |>
+    mutate(Reply = ifelse(has_reply_edges, "yes", "no")) |>
     select(Source = source_id, Name = name, Platform = platform,
            Access = access, Region = region, `Reply edges` = Reply, Active),
     row.names = FALSE)

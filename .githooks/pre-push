@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Refuse a push whose credential pin is unsound. Installed 2026-09-02.
+#
+# THE RULE LIVES IN ONE FILE, not in thirty-seven copies of this hook:
+# ~/.claude/lib/repo-pin-check.sh. This is the four-line caller.
+#
+# WHY A GIT HOOK AND NOT ONLY THE CLAUDE PreToolUse GUARD. That guard sees only
+# commands run through Claude Code's Bash tool; a push typed in a terminal or
+# made from an IDE never reaches it. This runs wherever the push comes from.
+#
+# FAILS OPEN IF THE CHECK IS ABSENT. A missing shared file must not wedge every
+# push on the machine -- a safety device that becomes an outage is not one.
+CHECK="$HOME/.claude/lib/repo-pin-check.sh"
+[ -x "$CHECK" ] || exit 0
+PIN_CHECK_QUIET=1 "$CHECK" || {
+  echo "pre-push: refusing -- see the fix above, then push again." >&2
+  exit 1
+}
+exit 0
