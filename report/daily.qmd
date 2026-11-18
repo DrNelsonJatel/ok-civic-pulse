@@ -3,6 +3,14 @@
 # masthead, and Quarto's default title would duplicate it.
 format:
   typst:
+    include-in-header:
+      text: |
+        // Pagination (Bringhurst; Chicago): no widows/orphans, headings kept with the next block,
+        // table rows never split, table cells ragged-right (hyphenation stays on).
+        #set text(costs: (widow: 100%, orphan: 100%))
+        #show heading: set block(sticky: true)
+        #show table.cell: set table.cell(breakable: false)
+        #show table: set par(justify: false)
     papersize: us-letter
     margin: { x: 1.9cm, y: 2.1cm }
     mainfont: "Helvetica Neue"
@@ -123,6 +131,7 @@ if (!nrow(post_issues) || !nrow(posts_meta)) cat("_Not enough data._\n") else {
 ## Emotional register
 
 ```{r}
+#| output: asis
 #| fig-height: 2.2
 #| fig-width: 6.5
 if (nrow(sentiment) && nrow(post_issues)) {
@@ -142,6 +151,9 @@ if (nrow(sentiment) && nrow(post_issues)) {
     scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
     labs(x = NULL, y = "Words per 100") + theme_okcp(12) +
     theme(legend.position = "bottom")
+} else {
+  # say so rather than leave an empty section (its heading would strand at a page foot)
+  cat("\nNo sentiment-scored, issue-coded posts in this period.\n")
 }
 ```
 
